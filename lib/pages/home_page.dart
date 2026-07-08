@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/services/log_service.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
+
+import '../services/api_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -15,7 +18,10 @@ class _HomePageState extends State<HomePage> {
   int _pendentesCount = 0;
   int _enviadosCount = 0;
   bool _isRefreshing = false;
+  bool _habilitaDinamicos = false;
   Timer? _refreshTimer;
+  int _tapCount = 0;
+  Timer? _tapTimer;
 
   String _resolveDisplayName(Map<String, dynamic>? auth) {
     final nome = (auth?['nome'] as String?)?.trim();
@@ -30,7 +36,8 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _carregarDados();
+    LogService.instance.info('Página Inicial carregada', tag: 'UI');
+    _carregarDados(forceApi: true);
     _startAutoRefresh();
   }
 
@@ -46,10 +53,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _tapTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _carregarDados() async {
+  Future<void> _carregarDados({bool forceApi = false}) async {
     final auth = await AppDatabase.instance.obterToken();
     final pendentes = await AppDatabase.instance.obterFormularios(
       sincronizado: false,
@@ -58,11 +66,27 @@ class _HomePageState extends State<HomePage> {
       sincronizado: true,
     );
 
+    bool habilitaDinamicos = auth?['habilitaRelatoriosDinamicos'] ?? false;
+    final token = auth?['token'];
+    
+    if (forceApi && token != null) {
+      final config = await ApiService().getRegionalConfig(token);
+      if (config != null) {
+        habilitaDinamicos = config['habilitaRelatoriosDinamicos'] == true;
+        await AppDatabase.instance.atualizarConfigRegional(
+          regionalId: config['regionalId'],
+          regionalNome: config['regionalNome'],
+          habilitaDinamicos: habilitaDinamicos,
+        );
+      }
+    }
+
     if (mounted) {
       setState(() {
         _username = _resolveDisplayName(auth);
         _pendentesCount = pendentes.length;
         _enviadosCount = enviados.length;
+        _habilitaDinamicos = habilitaDinamicos;
       });
     }
   }
@@ -103,7 +127,7 @@ class _HomePageState extends State<HomePage> {
     try {
       final pendentesAntes = _pendentesCount;
       await SyncService.instance.syncPending();
-      await _carregarDados();
+      await _carregarDados(forceApi: true);
       if (!mounted) return;
       final pendentesDepois = _pendentesCount;
 
@@ -149,62 +173,76 @@ class _HomePageState extends State<HomePage> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Color(0xFF272F68),
-                    Color(0xFF3A3F7A),
+            GestureDetector(
+              onTap: () {
+                _tapCount++;
+                _tapTimer?.cancel();
+                _tapTimer = Timer(const Duration(milliseconds: 500), () {
+                  _tapCount = 0;
+                });
+                if (_tapCount >= 3) {
+                  _tapCount = 0;
+                  _tapTimer?.cancel();
+                  Navigator.pushNamed(context, '/logs').then((_) => _carregarDados(forceApi: true));
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Color(0xFF272F68),
+                      Color(0xFF3A3F7A),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Color(0xFF3A3F7A),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
                   ],
                 ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0xFF3A3F7A),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(12),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.person,
+                        size: 32,
+                        color: Colors.white,
+                      ),
                     ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 32,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Bem-vindo',
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 14,
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Bem-vindo',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 14,
+                            ),
                           ),
-                        ),
-                        Text(
-                          _username,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
+                          Text(
+                            _username,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 32),
@@ -225,7 +263,7 @@ class _HomePageState extends State<HomePage> {
               badge: _pendentesCount > 0 ? _pendentesCount.toString() : null,
               onTap: () {
                 Navigator.pushNamed(context, '/pendentes')
-                    .then((_) => _carregarDados());
+                    .then((_) => _carregarDados(forceApi: true));
               },
             ),
             const SizedBox(height: 16),
@@ -236,7 +274,7 @@ class _HomePageState extends State<HomePage> {
               subtitle: '$_enviadosCount formulário(s) sincronizado(s)',
               onTap: () {
                 Navigator.pushNamed(context, '/enviados')
-                    .then((_) => _carregarDados());
+                    .then((_) => _carregarDados(forceApi: true));
               },
             ),
             const SizedBox(height: 16),
@@ -248,9 +286,23 @@ class _HomePageState extends State<HomePage> {
               color: const Color(0xFF3A3F7A),
               onTap: () {
                 Navigator.pushNamed(context, '/menu_formularios')
-                    .then((_) => _carregarDados());
+                    .then((_) => _carregarDados(forceApi: true));
               },
             ),
+            if (_habilitaDinamicos) ...[
+              const SizedBox(height: 16),
+              _buildMenuButton(
+                context: context,
+                icon: Icons.assignment_turned_in,
+                title: 'Relatórios Dinâmicos',
+                subtitle: 'Acesse formulários customizados',
+                color: Colors.orange.shade800,
+                onTap: () {
+                  Navigator.pushNamed(context, '/relatorios_dinamicos')
+                      .then((_) => _carregarDados(forceApi: true));
+                },
+              ),
+            ],
           ],
         ),
       ),

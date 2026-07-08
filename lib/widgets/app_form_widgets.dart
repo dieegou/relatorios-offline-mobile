@@ -72,6 +72,7 @@ class AppTextFormField extends StatelessWidget {
     super.key,
     required this.controller,
     required this.label,
+    this.focusNode,
     this.obrigatorio = false,
     this.keyboardType,
     this.inputFormatters,
@@ -85,6 +86,7 @@ class AppTextFormField extends StatelessWidget {
 
   final TextEditingController controller;
   final String label;
+  final FocusNode? focusNode;
   final bool obrigatorio;
   final TextInputType? keyboardType;
   final List<TextInputFormatter>? inputFormatters;
@@ -98,13 +100,14 @@ class AppTextFormField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 18),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           FieldLabel(label: label, obrigatorio: obrigatorio),
           TextFormField(
             controller: controller,
+            focusNode: focusNode,
             keyboardType: keyboardType,
             inputFormatters: inputFormatters,
             textCapitalization: textCapitalization,
@@ -113,31 +116,28 @@ class AppTextFormField extends StatelessWidget {
             decoration: InputDecoration(
               hintText: hintText,
               suffixIcon: suffixIcon,
+              filled: true,
+              fillColor: readOnly ? Colors.grey.shade100 : Colors.white,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: Colors.grey.shade300),
+                borderSide: const BorderSide(color: Color(0xFFC8CBD9)),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: Colors.grey.shade300),
+                borderSide: const BorderSide(color: Color(0xFFC8CBD9)),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: const BorderSide(color: Color(0xFF3A3F7A), width: 2),
               ),
-              filled: true,
-              fillColor: Colors.grey.shade50,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
-            validator: validator ??
-                (obrigatorio
-                    ? (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Campo obrigatório';
-                        }
-                        return null;
-                      }
-                    : null),
+            validator: (value) {
+              if (obrigatorio && (value == null || value.trim().isEmpty)) {
+                return 'Este campo é obrigatório';
+              }
+              return validator?.call(value);
+            },
           ),
         ],
       ),
@@ -205,17 +205,16 @@ class AppImagePickerButtons extends StatelessWidget {
 }
 
 class ImageHelper {
-  static const int maxSizeBytes = 10 * 1024 * 1024; // 10MB
+  static const int maxSizeBytes = 5 * 1024 * 1024; // 5MB
 
   static Future<Uint8List?> pickAndCompress(ImageSource source) async {
     final ImagePicker picker = ImagePicker();
     
-    // maxWidth de 1920 (Full HD) e qualidade 80 geralmente resultam em arquivos de 1MB a 2MB
     final XFile? file = await picker.pickImage(
       source: source,
-      maxWidth: 1920,
-      maxHeight: 1920,
-      imageQuality: 80,
+      maxWidth: 1280,
+      maxHeight: 1280,
+      imageQuality: 75,
     );
 
     if (file == null) return null;
@@ -223,23 +222,22 @@ class ImageHelper {
     final bytes = await file.readAsBytes();
     
     if (bytes.lengthInBytes > maxSizeBytes) {
-      // Se ainda for maior que 10MB (raríssimo com as configs acima), avisar ou comprimir mais
       return null; 
     }
 
     return bytes;
   }
 
-  static Future<List<Uint8List>> pickMultiAndCompress() async {
+  static Future<List<Uint8List>> pickMultiAndCompress({int limit = 6}) async {
     final ImagePicker picker = ImagePicker();
     final List<XFile> files = await picker.pickMultiImage(
-      maxWidth: 1920,
-      maxHeight: 1920,
-      imageQuality: 80,
+      maxWidth: 1280,
+      maxHeight: 1280,
+      imageQuality: 75,
     );
 
     List<Uint8List> result = [];
-    for (var file in files) {
+    for (var file in files.take(limit)) {
       final bytes = await file.readAsBytes();
       if (bytes.lengthInBytes <= maxSizeBytes) {
         result.add(bytes);

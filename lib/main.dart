@@ -4,12 +4,15 @@ import 'package:relatoriooffline/pages/home_page.dart';
 import 'package:relatoriooffline/pages/menu_formulario_page.dart';
 import 'package:relatoriooffline/pages/pendentes_page.dart';
 import 'package:relatoriooffline/pages/enviados_page.dart';
+import 'package:relatoriooffline/pages/logs_page.dart';
+import 'package:relatoriooffline/pages/cadastro_familia_page.dart';
+import 'package:relatoriooffline/pages/relatorios_dinamicos_page.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SyncService.instance.startMonitoring();
+  SyncService.instance.startMonitoring();
   runApp(const MyApp());
 }
 
@@ -40,6 +43,9 @@ class MyApp extends StatelessWidget {
         '/menu_formularios': (context) => const MenuFormularioPage(),
         '/pendentes': (context) => const PendentesPage(),
         '/enviados': (context) => const EnviadosPage(),
+        '/logs': (context) => const LogsPage(),
+        '/cadastro_familia': (context) => const CadastroFamiliaPage(),
+        '/relatorios_dinamicos': (context) => const RelatoriosDinamicosPage(),
       },
     );
   }

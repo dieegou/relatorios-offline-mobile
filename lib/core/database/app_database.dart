@@ -22,7 +22,7 @@ class AppDatabase {
 
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 7,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -68,6 +68,34 @@ class AppDatabase {
         )
       ''');
     }
+    if (oldVersion < 5) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nivel TEXT NOT NULL,
+          mensagem TEXT NOT NULL,
+          tag TEXT,
+          extra TEXT,
+          data_hora TEXT NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 6) {
+      final authInfo = await db.rawQuery('PRAGMA table_info(auth)');
+      if (!authInfo.any((c) => c['name'] == 'habilita_relatorios_dinamicos')) {
+        await db.execute(
+            'ALTER TABLE auth ADD COLUMN habilita_relatorios_dinamicos INTEGER DEFAULT 0');
+      }
+    }
+    if (oldVersion < 7) {
+      final authInfo = await db.rawQuery('PRAGMA table_info(auth)');
+      if (!authInfo.any((c) => c['name'] == 'regional_id')) {
+        await db.execute('ALTER TABLE auth ADD COLUMN regional_id INTEGER');
+      }
+      if (!authInfo.any((c) => c['name'] == 'regional_nome')) {
+        await db.execute('ALTER TABLE auth ADD COLUMN regional_nome TEXT');
+      }
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -79,16 +107,30 @@ class AppDatabase {
         nome TEXT,
         municipal_id INTEGER,
         municipal_nome TEXT,
+        regional_id INTEGER,
+        regional_nome TEXT,
+        habilita_relatorios_dinamicos INTEGER DEFAULT 0,
         data_login TEXT NOT NULL
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE templates (
+      CREATE TABLE IF NOT EXISTS templates (
         id INTEGER PRIMARY KEY,
         nome TEXT NOT NULL,
         descricao TEXT,
         dados_json TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nivel TEXT NOT NULL,
+        mensagem TEXT NOT NULL,
+        tag TEXT,
+        extra TEXT,
+        data_hora TEXT NOT NULL
       )
     ''');
 
@@ -131,6 +173,9 @@ class AppDatabase {
     String? nome,
     int? municipalId,
     String? municipalNome,
+    int? regionalId,
+    String? regionalNome,
+    bool? habilitaRelatoriosDinamicos,
   }) async {
     final db = await database;
     await db.delete('auth');
@@ -141,6 +186,9 @@ class AppDatabase {
       'nome': nome,
       'municipal_id': municipalId,
       'municipal_nome': municipalNome,
+      'regional_id': regionalId,
+      'regional_nome': regionalNome,
+      'habilita_relatorios_dinamicos': (habilitaRelatoriosDinamicos ?? false) ? 1 : 0,
       'data_login': DateTime.now().toIso8601String(),
     });
   }
@@ -149,9 +197,27 @@ class AppDatabase {
     final db = await database;
     final result = await db.query('auth', limit: 1);
     if (result.isNotEmpty) {
-      return result.first;
+      final data = Map<String, dynamic>.from(result.first);
+      data['habilitaRelatoriosDinamicos'] = data['habilita_relatorios_dinamicos'] == 1;
+      return data;
     }
     return null;
+  }
+
+  Future<void> atualizarConfigRegional({
+    required int? regionalId,
+    required String? regionalNome,
+    required bool habilitaDinamicos,
+  }) async {
+    final db = await database;
+    await db.update(
+      'auth',
+      {
+        'regional_id': regionalId,
+        'regional_nome': regionalNome,
+        'habilita_relatorios_dinamicos': habilitaDinamicos ? 1 : 0,
+      },
+    );
   }
 
   Future<void> limparToken() async {
@@ -184,6 +250,15 @@ class AppDatabase {
       {
         'dados_json': dadosJson,
       },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deletarFormulario(int id) async {
+    final db = await database;
+    await db.delete(
+      'formularios',
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -248,6 +323,36 @@ class AppDatabase {
       where: 'sincronizado = ?',
       whereArgs: [1],
     );
+  }
+
+  Future<void> salvarLog({
+    required String nivel,
+    required String mensagem,
+    String? tag,
+    String? extra,
+  }) async {
+    final db = await database;
+    await db.insert('logs', {
+      'nivel': nivel,
+      'mensagem': mensagem,
+      'tag': tag,
+      'extra': extra,
+      'data_hora': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> obterLogs({int limit = 200}) async {
+    final db = await database;
+    return await db.query(
+      'logs',
+      orderBy: 'data_hora DESC',
+      limit: limit,
+    );
+  }
+
+  Future<void> limparLogs() async {
+    final db = await database;
+    await db.delete('logs');
   }
 
   Future<void> close() async {
