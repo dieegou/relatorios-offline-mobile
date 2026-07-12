@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
+import 'package:http/io_client.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/services/api_service.dart';
 import 'package:relatoriooffline/services/log_service.dart';
+import 'package:relatoriooffline/services/recibo_iah_multipart.dart';
 
 class SyncService {
   static final SyncService instance = SyncService._init();
@@ -18,9 +20,22 @@ class SyncService {
   bool _monitoringStarted = false;
   bool _isSyncing = false;
   final Set<int> _inFlightIds = <int>{};
+  Timer? _retryTimer;
+  int _backoffLevel = 0;
 
   static const Duration _connectionStabilizationDelay = Duration(seconds: 3);
-  static const Duration _requestTimeout = Duration(seconds: 60);
+  static const Duration _requestTimeout = Duration(minutes: 3);
+  static const Duration _reachabilityTimeout = Duration(seconds: 8);
+  static const int _maxRetries = 3;
+  static const Duration _retryDelay = Duration(seconds: 3);
+
+  static const List<Duration> _backoffDelays = [
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
 
   bool _hasConnection(dynamic status) {
     if (status is ConnectivityResult) {
@@ -39,6 +54,7 @@ class SyncService {
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
       (status) async {
         if (_hasConnection(status)) {
+          _backoffLevel = 0;
           await Future.delayed(_connectionStabilizationDelay);
           final current = await _connectivity.checkConnectivity();
           if (_hasConnection(current)) {
@@ -56,6 +72,94 @@ class SyncService {
 
   Future<Map<String, dynamic>?> _getAuth() async {
     return await AppDatabase.instance.obterToken();
+  }
+
+  IOClient _createClient(Uri uri) {
+    final httpClient = HttpClient();
+    if (ApiService.allowSelfSignedCert) {
+      httpClient.badCertificateCallback = (cert, host, port) => host == uri.host;
+    }
+    return IOClient(httpClient);
+  }
+
+  bool _isNetworkError(Object error) {
+    return error is SocketException ||
+        error is TimeoutException ||
+        error is http.ClientException;
+  }
+
+  void _scheduleSyncRetry() {
+    final delay = _backoffDelays[_backoffLevel.clamp(0, _backoffDelays.length - 1)];
+    if (_backoffLevel < _backoffDelays.length - 1) _backoffLevel++;
+
+    LogService.instance.info(
+      'Nova tentativa de sincronização em ${delay.inSeconds}s',
+      tag: 'SyncService',
+    );
+
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      if (!_isSyncing) {
+        unawaited(syncPending());
+      }
+    });
+  }
+
+  Future<bool> _canReachServer() async {
+    final uri = Uri.parse(ApiService.getBaseUrl());
+    final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+    try {
+      final socket = await Socket.connect(uri.host, port, timeout: _reachabilityTimeout);
+      socket.destroy();
+      return true;
+    } catch (e) {
+      await LogService.instance.warning(
+        'Servidor inacessível no momento',
+        tag: 'SyncService',
+        extra: '${uri.host}:$port - $e',
+      );
+      return false;
+    }
+  }
+
+  Future<http.Response?> _sendMultipartWithRetry({
+    required Uri uri,
+    required http.MultipartRequest Function() buildRequest,
+    required String logTag,
+  }) async {
+    for (int attempt = 0; attempt < _maxRetries; attempt++) {
+      if (attempt > 0) {
+        await Future.delayed(_retryDelay * attempt);
+        await LogService.instance.info(
+          'Repetindo envio ($logTag), tentativa ${attempt + 1}',
+          tag: 'SyncService',
+        );
+      }
+
+      IOClient? client;
+      try {
+        client = _createClient(uri);
+        final request = buildRequest();
+        final streamedResponse = await client.send(request).timeout(_requestTimeout);
+        return await http.Response.fromStream(streamedResponse);
+      } catch (e, stack) {
+        await LogService.instance.error(
+          'Exceção ao enviar ($logTag)',
+          tag: 'SyncService',
+          extra: '$e\n$stack',
+        );
+        if (!_isNetworkError(e)) {
+          return null;
+        }
+        if (attempt == _maxRetries - 1) {
+          _scheduleSyncRetry();
+          return null;
+        }
+      } finally {
+        client?.close();
+      }
+    }
+    return null;
   }
 
   Future<bool> trySendRelatorio(
@@ -83,7 +187,6 @@ class SyncService {
 
       final Map<String, dynamic> dadosParaJson = Map.from(dadosBrutos);
       
-      // Remove IDs de dentro dos dados para não enviar duplicado
       dadosParaJson.remove('municipalId');
       dadosParaJson.remove('regionalId');
       
@@ -96,7 +199,7 @@ class SyncService {
               try {
                 final bytes = base64Decode(value[i] as String);
                 request.files.add(http.MultipartFile.fromBytes(
-                  key, // Removido o [] para ficar igual ao fixo
+                  key,
                   bytes,
                   filename: '${key}_$i.jpg',
                 ));
@@ -111,7 +214,6 @@ class SyncService {
         }
       });
 
-      // Monta o payload exatamente como o servidor espera
       final Map<String, dynamic> requestPayload = {
         "templateId": templateId,
         "dados": dadosParaJson,
@@ -148,6 +250,9 @@ class SyncService {
       return false;
     } catch (e, stack) {
       await LogService.instance.error('Exceção ao enviar relatório', tag: 'SyncService', extra: '$e\n$stack');
+      if (_isNetworkError(e)) {
+        _scheduleSyncRetry();
+      }
       return false;
     } finally {
       if (localId != null) _inFlightIds.remove(localId);
@@ -169,10 +274,23 @@ class SyncService {
         incluirDadosJson: true,
       );
 
+      if (pendentes.isEmpty) {
+        _retryTimer?.cancel();
+        _backoffLevel = 0;
+        return;
+      }
+
+      if (!await _canReachServer()) {
+        _scheduleSyncRetry();
+        return;
+      }
+
       await LogService.instance.info(
         'Sincronização: ${pendentes.length} formulário(s) pendente(s) encontrado(s)',
         tag: 'SyncService',
       );
+
+      var teveFalhaRede = false;
 
       for (final form in pendentes) {
         final id = form['id'] as int;
@@ -183,6 +301,8 @@ class SyncService {
         bool success = false;
         if (tipo == 'familia_atingida') {
           success = await trySendFamiliaAtingida(dadosBrutos, localId: id);
+        } else if (tipo == 'recibo_iah') {
+          success = await trySendReciboIah(dadosBrutos, localId: id);
         } else {
           success = await trySendRelatorio(
             dadosBrutos,
@@ -193,7 +313,19 @@ class SyncService {
 
         if (success) {
           await AppDatabase.instance.marcarComoSincronizado(id);
+        } else {
+          teveFalhaRede = true;
         }
+      }
+
+      if (teveFalhaRede) {
+        final restantes = await AppDatabase.instance.obterFormularios(sincronizado: false);
+        if (restantes.isNotEmpty) {
+          _scheduleSyncRetry();
+        }
+      } else {
+        _backoffLevel = 0;
+        _retryTimer?.cancel();
       }
     } catch (e, stack) {
       await LogService.instance.error(
@@ -226,51 +358,115 @@ class SyncService {
         return false;
       }
 
-      final uri = Uri.parse(
-          '${ApiService.getBaseUrl()}/relatorios/familia-atingida');
-      var request = http.MultipartRequest('POST', uri);
-      request.headers['Authorization'] = 'Bearer $token';
-
-      final Map<String, dynamic> requestJson = Map.from(dadosBrutos);
-      final fotos = requestJson.remove('fotosResidencia') as List?;
-
-      if (fotos != null) {
-        for (int i = 0; i < fotos.length; i++) {
-          final bytes = base64Decode(fotos[i] as String);
-          request.files.add(http.MultipartFile.fromBytes(
-            'RESIDENCIA',
-            bytes,
-            filename: 'residencia_$i.jpg',
-          ));
-        }
-      }
-
-      request.fields['request'] = jsonEncode(requestJson);
+      final uri = Uri.parse('${ApiService.getBaseUrl()}/relatorios/familia-atingida');
 
       await LogService.instance.info(
-          'Iniciando envio de relatório Família Atingida',
-          tag: 'SyncService',
-          extra: 'LocalID: $localId');
+        'Iniciando envio de relatório Família Atingida',
+        tag: 'SyncService',
+        extra: 'LocalID: $localId',
+      );
 
-      final streamedResponse = await request.send().timeout(_requestTimeout);
-      final response = await http.Response.fromStream(streamedResponse);
+      final response = await _sendMultipartWithRetry(
+        uri: uri,
+        logTag: 'Família Atingida',
+        buildRequest: () {
+          final request = http.MultipartRequest('POST', uri);
+          request.headers['Authorization'] = 'Bearer $token';
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
+          final requestJson = Map<String, dynamic>.from(dadosBrutos);
+          final fotos = requestJson.remove('fotosResidencia') as List?;
+
+          if (fotos != null) {
+            for (int i = 0; i < fotos.length; i++) {
+              request.files.add(http.MultipartFile.fromBytes(
+                'RESIDENCIA',
+                base64Decode(fotos[i] as String),
+                filename: 'residencia_$i.jpg',
+              ));
+            }
+          }
+
+          request.fields['request'] = jsonEncode(requestJson);
+          return request;
+        },
+      );
+
+      if (response != null && response.statusCode >= 200 && response.statusCode < 300) {
         await LogService.instance.info(
-            'Relatório Família Atingida enviado com sucesso',
-            tag: 'SyncService');
+          'Relatório Família Atingida enviado com sucesso',
+          tag: 'SyncService',
+        );
         return true;
       }
 
-      await LogService.instance.error('Erro ao enviar relatório Família Atingida',
+      if (response != null) {
+        await LogService.instance.error(
+          'Erro ao enviar relatório Família Atingida',
           tag: 'SyncService',
-          extra: 'Status: ${response.statusCode}, Body: ${response.body}');
+          extra: 'Status: ${response.statusCode}, Body: ${response.body}',
+        );
+      }
       return false;
-    } catch (e, stack) {
-      await LogService.instance.error(
-          'Exceção ao enviar relatório Família Atingida',
+    } finally {
+      if (localId != null) _inFlightIds.remove(localId);
+    }
+  }
+
+  Future<bool> trySendReciboIah(
+    Map<String, dynamic> dadosBrutos, {
+    int? localId,
+  }) async {
+    if (localId != null) {
+      if (_inFlightIds.contains(localId)) return false;
+      _inFlightIds.add(localId);
+    }
+
+    try {
+      final auth = await _getAuth();
+      final token = auth?['token'] as String?;
+      if (token == null || token.isEmpty) {
+        return false;
+      }
+
+      final uri = Uri.parse('${ApiService.getBaseUrl()}/relatorios/recibo-iah');
+
+      await LogService.instance.info(
+        'Iniciando envio de recibo IAH',
+        tag: 'SyncService',
+        extra: 'LocalID: $localId',
+      );
+
+      final response = await _sendMultipartWithRetry(
+        uri: uri,
+        logTag: 'Recibo IAH',
+        buildRequest: () => ReciboIahMultipart.buildFromPayload(
+          uri: uri,
+          token: token,
+          dadosBrutos: dadosBrutos,
+        ),
+      );
+
+      if (response != null && response.statusCode >= 200 && response.statusCode < 300) {
+        await LogService.instance.info(
+          'Recibo IAH enviado com sucesso',
           tag: 'SyncService',
-          extra: '$e\n$stack');
+        );
+        return true;
+      }
+
+      if (response != null) {
+        await LogService.instance.error(
+          'Erro ao enviar recibo IAH',
+          tag: 'SyncService',
+          extra: 'Status: ${response.statusCode}, Body: ${response.body}',
+        );
+
+        if (response.body.contains('Já existe recibo') ||
+            response.body.contains('recebimento encerrado')) {
+          return true;
+        }
+      }
+
       return false;
     } finally {
       if (localId != null) _inFlightIds.remove(localId);

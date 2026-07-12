@@ -82,6 +82,7 @@ class AppTextFormField extends StatelessWidget {
     this.suffixIcon,
     this.onTap,
     this.validator,
+    this.maxLines = 1,
   });
 
   final TextEditingController controller;
@@ -96,6 +97,7 @@ class AppTextFormField extends StatelessWidget {
   final Widget? suffixIcon;
   final VoidCallback? onTap;
   final String? Function(String?)? validator;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -113,6 +115,7 @@ class AppTextFormField extends StatelessWidget {
             textCapitalization: textCapitalization,
             readOnly: readOnly,
             onTap: onTap,
+            maxLines: maxLines,
             decoration: InputDecoration(
               hintText: hintText,
               suffixIcon: suffixIcon,

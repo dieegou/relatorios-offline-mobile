@@ -60,6 +60,7 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
   double? _latitude;
   double? _longitude;
   double? _precisaoGps;
+  bool _moradiaAlternativa = false;
   final List<Uint8List> _fotosResidencia = [];
 
   @override
@@ -91,6 +92,7 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
     _controllers['enderecoResponsavel']!.text = data['enderecoResponsavel'] ?? '';
     _controllers['numeroFamilias']!.text = data['numeroFamilias']?.toString() ?? '1';
     _controllers['numeroPessoas']!.text = data['numeroPessoas']?.toString() ?? '';
+    _moradiaAlternativa = data['moradiaAlternativa'] == true;
     
     _controllers['quantidadeAguaPotavel5L']!.text = data['quantidadeAguaPotavel5L']?.toString() ?? '';
     _controllers['quantidadeCestaBasicaAlimentos']!.text = data['quantidadeCestaBasicaAlimentos']?.toString() ?? '';
@@ -211,6 +213,7 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
         'enderecoResponsavel': _controllers['enderecoResponsavel']!.text,
         'numeroFamilias': int.tryParse(_controllers['numeroFamilias']!.text) ?? 1,
         'numeroPessoas': int.tryParse(_controllers['numeroPessoas']!.text) ?? 0,
+        'moradiaAlternativa': _moradiaAlternativa,
         'latitude': _latitude,
         'longitude': _longitude,
         'precisaoGps': _precisaoGps,
@@ -341,6 +344,30 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
               AppFormSection(
                 title: 'Dados da Família',
                 children: [
+                  const FieldLabel(label: 'Possui moradia alternativa?'),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment<bool>(
+                          value: true,
+                          label: Text('Sim'),
+                          icon: Icon(Icons.check_circle_outline),
+                        ),
+                        ButtonSegment<bool>(
+                          value: false,
+                          label: Text('Não'),
+                          icon: Icon(Icons.cancel_outlined),
+                        ),
+                      ],
+                      selected: {_moradiaAlternativa},
+                      onSelectionChanged: widget.readOnly
+                          ? null
+                          : (selection) =>
+                              setState(() => _moradiaAlternativa = selection.first),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   AppTextFormField(
                     controller: _controllers['numeroFamilias']!,
                     focusNode: _focusNodes['numeroFamilias'],

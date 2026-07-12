@@ -15,6 +15,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   String _username = '';
+  String _municipalNome = '';
+  String _regionalNome = '';
   int _pendentesCount = 0;
   int _enviadosCount = 0;
   bool _isRefreshing = false;
@@ -38,6 +40,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     LogService.instance.info('Página Inicial carregada', tag: 'UI');
     _carregarDados(forceApi: true);
+    unawaited(SyncService.instance.syncPending());
     _startAutoRefresh();
   }
 
@@ -57,37 +60,57 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Future<void> _carregarDados({bool forceApi = false}) async {
+  Future<void> _atualizarConfigApi() async {
     final auth = await AppDatabase.instance.obterToken();
-    final pendentes = await AppDatabase.instance.obterFormularios(
-      sincronizado: false,
-    );
-    final enviados = await AppDatabase.instance.obterFormularios(
-      sincronizado: true,
+    final token = auth?['token'];
+    if (token == null) return;
+
+    final config = await ApiService().getRegionalConfig(token);
+    if (config == null || !mounted) return;
+
+    final habilitaDinamicos = config['habilitaRelatoriosDinamicos'] == true;
+    await AppDatabase.instance.atualizarConfigRegional(
+      regionalId: config['regionalId'],
+      regionalNome: config['regionalNome'],
+      habilitaDinamicos: habilitaDinamicos,
     );
 
-    bool habilitaDinamicos = auth?['habilitaRelatoriosDinamicos'] ?? false;
-    final token = auth?['token'];
-    
-    if (forceApi && token != null) {
-      final config = await ApiService().getRegionalConfig(token);
-      if (config != null) {
-        habilitaDinamicos = config['habilitaRelatoriosDinamicos'] == true;
-        await AppDatabase.instance.atualizarConfigRegional(
-          regionalId: config['regionalId'],
-          regionalNome: config['regionalNome'],
-          habilitaDinamicos: habilitaDinamicos,
-        );
+    if (!mounted) return;
+    setState(() {
+      _habilitaDinamicos = habilitaDinamicos;
+      final regionalNome = (config['regionalNome'] as String?)?.trim();
+      if (regionalNome != null && regionalNome.isNotEmpty) {
+        _regionalNome = regionalNome;
       }
-    }
+    });
+  }
+
+  Future<void> _carregarDados({bool forceApi = false}) async {
+    final auth = await AppDatabase.instance.obterToken();
 
     if (mounted) {
       setState(() {
         _username = _resolveDisplayName(auth);
-        _pendentesCount = pendentes.length;
-        _enviadosCount = enviados.length;
-        _habilitaDinamicos = habilitaDinamicos;
+        _municipalNome = (auth?['municipal_nome'] as String?)?.trim() ?? '';
+        _regionalNome = (auth?['regional_nome'] as String?)?.trim() ?? '';
+        _habilitaDinamicos = auth?['habilitaRelatoriosDinamicos'] ?? false;
       });
+    }
+
+    final results = await Future.wait([
+      AppDatabase.instance.obterFormularios(sincronizado: false),
+      AppDatabase.instance.obterFormularios(sincronizado: true),
+    ]);
+
+    if (mounted) {
+      setState(() {
+        _pendentesCount = results[0].length;
+        _enviadosCount = results[1].length;
+      });
+    }
+
+    if (forceApi) {
+      unawaited(_atualizarConfigApi());
     }
   }
 
@@ -127,7 +150,8 @@ class _HomePageState extends State<HomePage> {
     try {
       final pendentesAntes = _pendentesCount;
       await SyncService.instance.syncPending();
-      await _carregarDados(forceApi: true);
+      await _carregarDados();
+      await _atualizarConfigApi();
       if (!mounted) return;
       final pendentesDepois = _pendentesCount;
 
@@ -238,6 +262,42 @@ class _HomePageState extends State<HomePage> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
+                          if (_municipalNome.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.location_city, size: 14, color: Colors.white70),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    _municipalNome,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                          if (_regionalNome.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(Icons.map_outlined, size: 14, color: Colors.white70),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    _regionalNome,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),

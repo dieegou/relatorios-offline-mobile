@@ -172,10 +172,15 @@ class _EnviadosPageState extends State<EnviadosPage> {
                       }
 
                       final form = _formularios[index];
-                      final nomeTemplate = form['tipo'] as String;
+                      final tipo = form['tipo'] as String;
                       final dataCriacao = DateTime.parse(
                         form['data_criacao'] as String,
                       );
+
+                      String nomeExibicao = tipo;
+                      if (tipo == 'familia_atingida') nomeExibicao = 'Família Atingida';
+                      if (tipo == 'familia') nomeExibicao = 'Família (Legado)';
+                      if (tipo == 'recibo_iah') nomeExibicao = 'Recibo de Entrega IAH';
 
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
@@ -203,7 +208,7 @@ class _EnviadosPageState extends State<EnviadosPage> {
                             ),
                           ),
                           title: Text(
-                            nomeTemplate,
+                            nomeExibicao,
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,

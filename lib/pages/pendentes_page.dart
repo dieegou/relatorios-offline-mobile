@@ -176,6 +176,7 @@ class _PendentesPageState extends State<PendentesPage> {
                       String nomeExibicao = tipo;
                       if (tipo == 'familia_atingida') nomeExibicao = 'Família Atingida';
                       if (tipo == 'familia') nomeExibicao = 'Família (Legado)';
+                      if (tipo == 'recibo_iah') nomeExibicao = 'Recibo de Entrega IAH';
 
                       return Dismissible(
                         key: Key('pendente_$id'),

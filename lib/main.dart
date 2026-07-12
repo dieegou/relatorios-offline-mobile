@@ -7,6 +7,8 @@ import 'package:relatoriooffline/pages/enviados_page.dart';
 import 'package:relatoriooffline/pages/logs_page.dart';
 import 'package:relatoriooffline/pages/cadastro_familia_page.dart';
 import 'package:relatoriooffline/pages/relatorios_dinamicos_page.dart';
+import 'package:relatoriooffline/pages/entregas_desastre_page.dart';
+import 'package:relatoriooffline/pages/recibo_iah_form_page.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 
@@ -16,8 +18,33 @@ Future<void> main() async {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Ao voltar do background, tenta reenviar pendentes imediatamente.
+    if (state == AppLifecycleState.resumed) {
+      SyncService.instance.syncPending();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -46,6 +73,8 @@ class MyApp extends StatelessWidget {
         '/logs': (context) => const LogsPage(),
         '/cadastro_familia': (context) => const CadastroFamiliaPage(),
         '/relatorios_dinamicos': (context) => const RelatoriosDinamicosPage(),
+        '/entregas_desastre': (context) => const EntregasDesastrePage(),
+        '/recibo_iah_form': (context) => const ReciboIahFormPage(),
       },
     );
   }

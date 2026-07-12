@@ -22,7 +22,7 @@ class AppDatabase {
 
     final db = await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -96,6 +96,15 @@ class AppDatabase {
         await db.execute('ALTER TABLE auth ADD COLUMN regional_nome TEXT');
       }
     }
+    if (oldVersion < 8) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS entregas_iah (
+          id INTEGER PRIMARY KEY,
+          desastre_id INTEGER,
+          dados_json TEXT NOT NULL
+        )
+      ''');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -143,6 +152,14 @@ class AppDatabase {
         sincronizado INTEGER NOT NULL DEFAULT 0,
         data_criacao TEXT NOT NULL,
         FOREIGN KEY (template_id) REFERENCES templates (id)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entregas_iah (
+        id INTEGER PRIMARY KEY,
+        desastre_id INTEGER,
+        dados_json TEXT NOT NULL
       )
     ''');
   }
@@ -322,6 +339,127 @@ class AppDatabase {
       'formularios',
       where: 'sincronizado = ?',
       whereArgs: [1],
+    );
+  }
+
+  Future<void> salvarEntregasIah(List<dynamic> entregas) async {
+    final db = await database;
+    final localRows = await db.query('entregas_iah');
+    final localById = <int, Map<String, dynamic>>{
+      for (final row in localRows)
+        row['id'] as int: jsonDecode(row['dados_json'] as String) as Map<String, dynamic>,
+    };
+
+    final familiaIdsComReciboPendente = await _obterFamiliasComReciboPendente();
+
+    await db.transaction((txn) async {
+      await txn.delete('entregas_iah');
+      for (var entrega in entregas) {
+        final id = entrega['id'] as int;
+        Map<String, dynamic> dados = Map<String, dynamic>.from(entrega);
+
+        final local = localById[id];
+        if (local != null) {
+          final localStatus = local['statusEntrega'] as String?;
+          final serverStatus = entrega['statusEntrega'] as String?;
+          if (familiaIdsComReciboPendente.contains(id) ||
+              (localStatus != 'LIBERADA' && serverStatus == 'LIBERADA')) {
+            dados = local;
+          }
+        }
+
+        await txn.insert('entregas_iah', {
+          'id': id,
+          'desastre_id': dados['desastre']['id'],
+          'dados_json': jsonEncode(dados),
+        });
+      }
+    });
+  }
+
+  Future<Set<int>> _obterFamiliasComReciboPendente() async {
+    final pendentes = await obterFormularios(
+      sincronizado: false,
+      incluirDadosJson: true,
+    );
+    final ids = <int>{};
+    for (final form in pendentes) {
+      if (form['tipo'] == 'recibo_iah') {
+        final dados = jsonDecode(form['dados_json'] as String) as Map<String, dynamic>;
+        final familiaId = dados['familiaAtingidaId'];
+        if (familiaId is int) ids.add(familiaId);
+      }
+    }
+    return ids;
+  }
+
+  Future<Map<String, dynamic>?> obterReciboIahPendentePorFamilia(int familiaAtingidaId) async {
+    final pendentes = await obterFormularios(
+      sincronizado: false,
+      incluirDadosJson: true,
+    );
+    for (final form in pendentes) {
+      if (form['tipo'] != 'recibo_iah') continue;
+      final dados = jsonDecode(form['dados_json'] as String) as Map<String, dynamic>;
+      if (dados['familiaAtingidaId'] == familiaAtingidaId) {
+        return form;
+      }
+    }
+    return null;
+  }
+
+  Future<int> salvarOuAtualizarReciboIahPendente({
+    required int familiaAtingidaId,
+    required String dadosJson,
+  }) async {
+    final existente = await obterReciboIahPendentePorFamilia(familiaAtingidaId);
+    if (existente != null) {
+      final id = existente['id'] as int;
+      await atualizarFormulario(id: id, dadosJson: dadosJson);
+      return id;
+    }
+    return await salvarFormulario(tipo: 'recibo_iah', dadosJson: dadosJson);
+  }
+
+  Future<List<Map<String, dynamic>>> obterEntregasIah() async {
+    final db = await database;
+    return await db.query('entregas_iah', orderBy: 'desastre_id ASC, id ASC');
+  }
+
+  Future<List<Map<String, dynamic>>> obterEntregasIahPorDesastre(int desastreId) async {
+    final db = await database;
+    return await db.query(
+      'entregas_iah',
+      where: 'desastre_id = ?',
+      whereArgs: [desastreId],
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<void> marcarEntregaComoEntregue(int id, Map<String, dynamic>? auth) async {
+    final db = await database;
+    final rows = await db.query('entregas_iah', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return;
+
+    final dados = Map<String, dynamic>.from(
+      jsonDecode(rows.first['dados_json'] as String) as Map<String, dynamic>,
+    );
+    dados['statusEntrega'] = 'ENTREGUE';
+    dados['statusEntregaDescricao'] = 'Entregue';
+    dados['dataEntrega'] = DateTime.now().toIso8601String();
+    if (auth != null) {
+      dados['usuarioEntrega'] = {
+        'id': 0,
+        'nome': auth['nome'] ?? auth['username'] ?? 'Agente',
+        'username': auth['username'] ?? '',
+      };
+    }
+
+    await db.update(
+      'entregas_iah',
+      {'dados_json': jsonEncode(dados)},
+      where: 'id = ?',
+      whereArgs: [id],
     );
   }
 
