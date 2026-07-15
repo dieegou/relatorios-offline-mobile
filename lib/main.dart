@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:relatoriooffline/pages/login_page.dart';
 import 'package:relatoriooffline/pages/home_page.dart';
@@ -40,9 +42,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Ao voltar do background, tenta reenviar pendentes imediatamente.
     if (state == AppLifecycleState.resumed) {
-      SyncService.instance.syncPending();
+      Future<void>.delayed(const Duration(milliseconds: 800), () {
+        unawaited(SyncService.instance.syncPending());
+      });
     }
   }
 

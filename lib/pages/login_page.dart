@@ -96,8 +96,10 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       backgroundColor: Colors.orange.shade50,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.orange.shade50,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
       ),
       body: SafeArea(
         child: Center(
