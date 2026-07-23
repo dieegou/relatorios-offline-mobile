@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:relatoriooffline/services/api_service.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/services/log_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -29,19 +30,28 @@ class _LoginPageState extends State<LoginPage> {
 
     setState(() => _isLoading = true);
 
+    final username = _usernameController.text.trim();
+    await LogService.instance.info('Iniciando processo de login', tag: 'UI', extra: 'Usuário: $username');
+
     try {
       final result = await _apiService.login(
-        _usernameController.text.trim(),
+        username,
         _passwordController.text,
       );
 
       if (!mounted) return;
 
       if (result != null && result['token'] != null) {
+        await LogService.instance.info('Dados de login válidos recebidos', tag: 'UI');
         await AppDatabase.instance.salvarToken(
-          _usernameController.text.trim(),
+          username,
           result['token'],
           nome: result['nome'],
+          municipalId: result['municipalId'],
+          municipalNome: result['municipalNome'],
+          regionalId: result['regionalId'],
+          regionalNome: result['regionalNome'],
+          habilitaRelatoriosDinamicos: result['habilitaRelatoriosDinamicos'],
         );
 
         if (!mounted) return;
@@ -55,6 +65,7 @@ class _LoginPageState extends State<LoginPage> {
 
         Navigator.pushReplacementNamed(context, '/home');
       } else {
+        await LogService.instance.warning('Login negado: credenciais inválidas', tag: 'UI');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Usuário ou senha inválidos'),
@@ -62,8 +73,9 @@ class _LoginPageState extends State<LoginPage> {
           ),
         );
       }
-    } catch (e) {
+    } catch (e, stack) {
       if (!mounted) return;
+      await LogService.instance.error('Exceção no processo de login', tag: 'UI', extra: '$e\n$stack');
       final mensagem = e.toString().replaceFirst('Exception: ', '');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -84,8 +96,10 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       backgroundColor: Colors.orange.shade50,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.orange.shade50,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
       ),
       body: SafeArea(
         child: Center(

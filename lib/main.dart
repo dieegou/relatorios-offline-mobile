@@ -1,22 +1,53 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:relatoriooffline/pages/login_page.dart';
 import 'package:relatoriooffline/pages/home_page.dart';
 import 'package:relatoriooffline/pages/menu_formulario_page.dart';
-import 'package:relatoriooffline/pages/familia_form_page.dart';
-import 'package:relatoriooffline/pages/recibo_form_page.dart';
 import 'package:relatoriooffline/pages/pendentes_page.dart';
 import 'package:relatoriooffline/pages/enviados_page.dart';
+import 'package:relatoriooffline/pages/logs_page.dart';
+import 'package:relatoriooffline/pages/cadastro_familia_page.dart';
+import 'package:relatoriooffline/pages/relatorios_dinamicos_page.dart';
+import 'package:relatoriooffline/pages/entregas_desastre_page.dart';
+import 'package:relatoriooffline/pages/recibo_iah_form_page.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SyncService.instance.startMonitoring();
+  SyncService.instance.startMonitoring();
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      Future<void>.delayed(const Duration(milliseconds: 800), () {
+        unawaited(SyncService.instance.syncPending());
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,10 +71,13 @@ class MyApp extends StatelessWidget {
         '/login': (context) => const LoginPage(),
         '/home': (context) => const HomePage(),
         '/menu_formularios': (context) => const MenuFormularioPage(),
-        '/familia_form': (context) => const FamiliaFormPage(),
-        '/recibo_form': (context) => const ReciboFormPage(),
         '/pendentes': (context) => const PendentesPage(),
         '/enviados': (context) => const EnviadosPage(),
+        '/logs': (context) => const LogsPage(),
+        '/cadastro_familia': (context) => const CadastroFamiliaPage(),
+        '/relatorios_dinamicos': (context) => const RelatoriosDinamicosPage(),
+        '/entregas_desastre': (context) => const EntregasDesastrePage(),
+        '/recibo_iah_form': (context) => const ReciboIahFormPage(),
       },
     );
   }

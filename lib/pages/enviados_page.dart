@@ -1,5 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/pages/dynamic_form_page.dart';
+import 'package:relatoriooffline/pages/familia_form_page.dart';
 
 class EnviadosPage extends StatefulWidget {
   const EnviadosPage({super.key});
@@ -23,6 +26,7 @@ class _EnviadosPageState extends State<EnviadosPage> {
 
     final formularios = await AppDatabase.instance.obterFormularios(
       sincronizado: true,
+      incluirDadosJson: true,
     );
 
     if (mounted) {
@@ -33,25 +37,78 @@ class _EnviadosPageState extends State<EnviadosPage> {
     }
   }
 
-  String _getTipoLabel(String tipo) {
-    switch (tipo) {
-      case 'familia':
-        return 'Família';
-      case 'recibo':
-        return 'Recibo';
-      default:
-        return tipo;
+  Future<void> _abrirFormulario(Map<String, dynamic> form) async {
+    final tipo = form['tipo'] as String;
+    final dadosJson = form['dados_json'] as String;
+    final templateId = form['template_id'] as int?;
+
+    // Se o dados_json for apenas o placeholder antigo, não conseguimos mostrar os dados.
+    if (dadosJson == '{"sincronizado":true}') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Este relatório foi sincronizado em uma versão anterior e seus dados locais foram removidos.')),
+        );
+      }
+      return;
+    }
+
+    final initialData = jsonDecode(dadosJson) as Map<String, dynamic>;
+
+    Widget? page;
+
+    if (templateId != null) {
+      final templates = await AppDatabase.instance.obterTemplates();
+      final templateRecord = templates.firstWhere((t) => t['id'] == templateId);
+      final templateData = jsonDecode(templateRecord['dados_json']);
+
+      page = DynamicFormPage(
+        template: templateData,
+        initialData: initialData,
+        readOnly: true,
+      );
+    } else if (tipo == 'familia') {
+      page = FamiliaFormPage(
+        initialData: initialData,
+        readOnly: true,
+      );
+    }
+
+    if (page != null && mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => page!),
+      );
     }
   }
 
-  IconData _getTipoIcon(String tipo) {
-    switch (tipo) {
-      case 'familia':
-        return Icons.family_restroom;
-      case 'recibo':
-        return Icons.receipt_long;
-      default:
-        return Icons.description;
+  Future<void> _confirmarLimparEnviados() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Limpar Enviados'),
+        content: const Text('Deseja realmente remover todos os formulários já enviados da lista local? Esta ação não pode ser desfeita.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Limpar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await AppDatabase.instance.limparEnviados();
+      _carregarFormularios();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Lista de enviados limpa com sucesso.')),
+        );
+      }
     }
   }
 
@@ -91,13 +148,39 @@ class _EnviadosPageState extends State<EnviadosPage> {
                   color: Colors.orange.shade700,
                   child: ListView.builder(
                     padding: const EdgeInsets.all(16),
-                    itemCount: _formularios.length,
+                    itemCount: _formularios.length + 1,
                     itemBuilder: (context, index) {
+                      if (index == _formularios.length) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          child: OutlinedButton.icon(
+                            onPressed: _confirmarLimparEnviados,
+                            icon: const Icon(Icons.delete_sweep, color: Colors.red),
+                            label: const Text(
+                              'LIMPAR RELATÓRIOS ENVIADOS',
+                              style: TextStyle(color: Colors.red),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Colors.red),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+
                       final form = _formularios[index];
                       final tipo = form['tipo'] as String;
                       final dataCriacao = DateTime.parse(
                         form['data_criacao'] as String,
                       );
+
+                      String nomeExibicao = tipo;
+                      if (tipo == 'familia_atingida') nomeExibicao = 'Família Atingida';
+                      if (tipo == 'familia') nomeExibicao = 'Família (Legado)';
+                      if (tipo == 'recibo_iah') nomeExibicao = 'Recibo de Entrega IAH';
 
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
@@ -110,6 +193,7 @@ class _EnviadosPageState extends State<EnviadosPage> {
                           ),
                         ),
                         child: ListTile(
+                          onTap: () => _abrirFormulario(form),
                           contentPadding: const EdgeInsets.all(16),
                           leading: Container(
                             padding: const EdgeInsets.all(12),
@@ -118,13 +202,13 @@ class _EnviadosPageState extends State<EnviadosPage> {
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Icon(
-                              _getTipoIcon(tipo),
+                              Icons.assignment_turned_in,
                               color: Colors.green.shade700,
                               size: 28,
                             ),
                           ),
                           title: Text(
-                            _getTipoLabel(tipo),
+                            nomeExibicao,
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
@@ -169,7 +253,6 @@ class _EnviadosPageState extends State<EnviadosPage> {
                               ),
                             ],
                           ),
-                          trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                         ),
                       );
                     },

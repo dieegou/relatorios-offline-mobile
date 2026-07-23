@@ -12,7 +12,16 @@ import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 
 class FamiliaFormPage extends StatefulWidget {
-  const FamiliaFormPage({super.key});
+  final Map<String, dynamic>? initialData;
+  final int? localId;
+  final bool readOnly;
+
+  const FamiliaFormPage({
+    super.key,
+    this.initialData,
+    this.localId,
+    this.readOnly = false,
+  });
 
   @override
   State<FamiliaFormPage> createState() => _FamiliaFormPageState();
@@ -89,7 +98,6 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
   double? _latitude;
   double? _longitude;
   final List<Uint8List> _fotosResidencia = <Uint8List>[];
-  final ImagePicker _picker = ImagePicker();
   bool _possuiNecessidadesEspeciais = false;
   bool _possuiDesaparecidos = false;
   bool _possuiFeridos = false;
@@ -116,10 +124,48 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
     super.initState();
     _currencyFormat = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$');
     _currencyInputFormatter = _CurrencyInputFormatter(_currencyFormat);
-    _possuiNecessidadesEspeciais = _normalizeBool(_controllers['possuiNecessidadesEspeciais']!.text);
-    _possuiDesaparecidos = _normalizeBool(_controllers['possuiDesaparecidos']!.text);
-    _possuiFeridos = _normalizeBool(_controllers['possuiFeridos']!.text);
-    _capturarLocalizacao();
+
+    if (widget.initialData != null) {
+      _preencherCampos(widget.initialData!);
+    } else {
+      _capturarLocalizacao();
+    }
+  }
+
+  void _preencherCampos(Map<String, dynamic> data) {
+    data.forEach((key, value) {
+      if (_controllers.containsKey(key)) {
+        if (key == 'estimativaDanoMoveis' || key == 'estimativaDanoEdificacao') {
+          if (value != null) {
+            final doubleVal = double.tryParse(value.toString()) ?? 0.0;
+            _controllers[key]!.text = _currencyFormat.format(doubleVal);
+          }
+        } else {
+          _controllers[key]!.text = value?.toString() ?? '';
+        }
+      }
+    });
+
+    if (data['dataNascimentoAtingido'] != null) {
+      _dataNascimentoSelecionada = DateTime.parse(data['dataNascimentoAtingido']);
+      _controllers['dataNascimentoAtingido']!.text = _formatarData(_dataNascimentoSelecionada!);
+    }
+
+    _latitude = double.tryParse(data['latitude']?.toString() ?? '');
+    _longitude = double.tryParse(data['longitude']?.toString() ?? '');
+
+    if (data['fotosResidencia'] != null && data['fotosResidencia'] is List) {
+      final fotos = data['fotosResidencia'] as List;
+      for (var f in fotos) {
+        _fotosResidencia.add(base64Decode(f.toString()));
+      }
+    }
+
+    setState(() {
+      _possuiNecessidadesEspeciais = _normalizeBool(data['possuiNecessidadesEspeciais']?.toString());
+      _possuiDesaparecidos = _normalizeBool(data['possuiDesaparecidos']?.toString());
+      _possuiFeridos = _normalizeBool(data['possuiFeridos']?.toString());
+    });
   }
 
   String _formatarData(DateTime data) {
@@ -295,6 +341,9 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
       return null;
     }
 
+    final auth = await AppDatabase.instance.obterToken();
+    final municipalIdFromAuth = auth?['municipal_id'];
+
     final payload = {
       'nomeAtingido': _controllers['nomeAtingido']!.text,
       'cpfAtingido': _controllers['cpfAtingido']!.text,
@@ -345,7 +394,9 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
       'qtdRoupas': toInt(_controllers['qtdRoupasQtd']!.text) ?? 0,
       'outrasNecessidades': _controllers['outrasNecessidades']!.text,
       'observacaoAssistencia': _controllers['observacaoAssistencia']!.text,
-      'coordenadoriaMunicipalId': _controllers['coordenadoriaMunicipalId']!.text,
+      'coordenadoriaMunicipalId': _controllers['coordenadoriaMunicipalId']!.text.isEmpty 
+          ? municipalIdFromAuth?.toString() 
+          : _controllers['coordenadoriaMunicipalId']!.text,
       'latitude': _latitude?.toString(),
       'longitude': _longitude?.toString(),
       'fotosResidencia': _fotosResidencia.map(base64Encode).toList(),
@@ -354,7 +405,14 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
     final dadosJson = jsonEncode(payload);
 
     try {
-      final id = await AppDatabase.instance.salvarFormulario(tipo: 'familia', dadosJson: dadosJson);
+      int id;
+      if (widget.localId != null) {
+        id = widget.localId!;
+        await AppDatabase.instance.atualizarFormulario(id: id, dadosJson: dadosJson);
+      } else {
+        id = await AppDatabase.instance.salvarFormulario(tipo: 'familia', dadosJson: dadosJson);
+      }
+
       final enviado = await SyncService.instance.trySendRelatorio(payload, localId: id);
 
       if (enviado) {
@@ -464,17 +522,18 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
     );
   }
 
-  Future<void> _selecionarFotoResidencia() async {
-    final List<XFile> imagens = await _picker.pickMultiImage(
-      imageQuality: 70,
-      maxWidth: 1600,
-    );
-    if (imagens.isEmpty) return;
-
-    final novasFotos = await Future.wait(imagens.map((imagem) => imagem.readAsBytes()));
-    setState(() {
-      _fotosResidencia.addAll(novasFotos);
-    });
+  Future<void> _selecionarFotoResidencia(ImageSource source) async {
+    if (source == ImageSource.camera) {
+      final bytes = await ImageHelper.pickAndCompress(ImageSource.camera);
+      if (bytes != null) {
+        setState(() => _fotosResidencia.add(bytes));
+      }
+    } else {
+      final novasFotos = await ImageHelper.pickMultiAndCompress();
+      if (novasFotos.isNotEmpty) {
+        setState(() => _fotosResidencia.addAll(novasFotos));
+      }
+    }
   }
 
   void _abrirPreviewFoto(int index) {
@@ -511,91 +570,67 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
   }
 
   Widget _previewFotoResidencia() {
-    if (_fotosResidencia.isEmpty) {
-      return OutlinedButton.icon(
-        onPressed: _selecionarFotoResidencia,
-        icon: const Icon(Icons.photo_library),
-        label: const Text('Selecionar fotos da residência'),
-      );
-    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '${_fotosResidencia.length} imagem(ns) selecionada(s)',
-          style: Theme.of(context).textTheme.bodyMedium,
+        AppImagePickerButtons(
+          onCamera: () => _selecionarFotoResidencia(ImageSource.camera),
+          onGallery: () => _selecionarFotoResidencia(ImageSource.gallery),
         ),
-        const SizedBox(height: 4),
-        Text(
-          'Toque na miniatura para ampliar',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 120,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: _fotosResidencia.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, index) {
-              return Stack(
-                children: [
-                  GestureDetector(
-                    onTap: () => _abrirPreviewFoto(index),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.memory(
-                        _fotosResidencia[index],
-                        width: 120,
-                        height: 120,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                  const Positioned(
-                    left: 6,
-                    bottom: 6,
-                    child: Icon(
-                      Icons.zoom_in,
-                      color: Colors.white,
-                    ),
-                  ),
-                  Positioned(
-                    top: 4,
-                    right: 4,
-                    child: InkWell(
-                      onTap: () => setState(() => _fotosResidencia.removeAt(index)),
-                      child: Container(
-                        padding: const EdgeInsets.all(3),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: const Icon(Icons.close, size: 16, color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ],
-              );
-            },
+        if (_fotosResidencia.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text(
+            '${_fotosResidencia.length} imagem(ns) selecionada(s)',
+            style: Theme.of(context).textTheme.bodyMedium,
           ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            TextButton.icon(
-              onPressed: _selecionarFotoResidencia,
-              icon: const Icon(Icons.add_photo_alternate_outlined),
-              label: const Text('Adicionar fotos'),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 120,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _fotosResidencia.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                return Stack(
+                  children: [
+                    GestureDetector(
+                      onTap: () => _abrirPreviewFoto(index),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          _fotosResidencia[index],
+                          width: 120,
+                          height: 120,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: InkWell(
+                        onTap: () => setState(() => _fotosResidencia.removeAt(index)),
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Icon(Icons.close, size: 16, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
-            const SizedBox(width: 12),
-            TextButton.icon(
-              onPressed: () => setState(_fotosResidencia.clear),
-              icon: const Icon(Icons.delete_outline),
-              label: const Text('Remover todas'),
-            ),
-          ],
-        ),
+          ),
+          TextButton.icon(
+            onPressed: () => setState(_fotosResidencia.clear),
+            icon: const Icon(Icons.delete_outline, color: Colors.red),
+            label: const Text('Remover todas', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ],
     );
   }
@@ -633,9 +668,24 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
       return false;
     }
 
-    final posicao = await Geolocator.getCurrentPosition();
+    Position? posicao;
+    try {
+      posicao = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 30),
+        ),
+      );
+    } catch (e) {
+      posicao = await Geolocator.getLastKnownPosition();
+      if (posicao == null) return false;
+    }
+
     _latitude = posicao.latitude;
     _longitude = posicao.longitude;
+    if (_controllers.containsKey('localizacao')) {
+      _controllers['localizacao']!.text = "$_latitude,$_longitude";
+    }
     return true;
   }
 
@@ -682,293 +732,299 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
         foregroundColor: Colors.white,
         scrolledUnderElevation: 0,
         actions: [
-          IconButton(
-            icon: _isSubmitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.save),
-            onPressed: _isSubmitting ? null : _salvarFormulario,
-          )
+          if (!widget.readOnly)
+            IconButton(
+              icon: _isSubmitting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.save),
+              onPressed: _isSubmitting ? null : _salvarFormulario,
+            )
         ],
       ),
 
       body: SafeArea(
-        child: Form(
-          key: _formKey,
-          autovalidateMode: AutovalidateMode.onUserInteraction,
-          child: ListView(
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.all(16),
-            children: [
-              AppFormSection(
-                title: 'Identificação do Atingido',
-                children: [
-                  _campo('nomeAtingido', label: 'Nome'),
-                  _campo(
-                    'cpfAtingido',
-                    label: 'CPF',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly, _cpfFormatter],
-                  ),
-                  _campo('rgAtingido', label: 'RG'),
-                  _campoDataNascimento(),
-                  _campo('enderecoAtingido', label: 'Endereço'),
-                  _campo('bairroAtingido', label: 'Bairro'),
-                  _campo('cidadeAtingido', label: 'Cidade'),
-                  _campo('complementoAtingido', label: 'Complemento'),
-                ],
-              ),
-              AppFormSection(
-                title: 'Dados do Imóvel',
-                children: [
-                  CustomDropdown(
-                    label: 'Localização',
-                    controller: _controllers['localizacao']!,
-                    opcoes: const ['Rural', 'Urbana'],
-                    obrigatorio: true,
-                  ),
-                  CustomDropdown(
-                    label: 'Moradia',
-                    controller: _controllers['moradia']!,
-                    opcoes: const ['Própria', 'Alugada'],
-                    obrigatorio: true,
-                  ),
-                  CustomDropdown(
-                    label: 'Danos na Residência',
-                    controller: _controllers['danoResidencia']!,
-                    opcoes: const ['Danos Parcial', 'Dano Total', 'Sem Dano'],
-                    obrigatorio: true,
-                  ),
-                  _campoMonetario(
-                    'estimativaDanoMoveis',
-                    label: 'Estimativa de Dano em Móveis',
-                  ),
-                  _campoMonetario(
-                    'estimativaDanoEdificacao',
-                    label: 'Estimativa de Dano na Edificação',
-                  ),
-                  CustomDropdown(
-                    label: 'Ocupação',
-                    controller: _controllers['ocupacao']!,
-                    opcoes: const ['Regular', 'Irregular'],
-                  ),
-                  CustomDropdown(
-                    label: 'Tipo de Construção',
-                    controller: _controllers['tipoConstrucao']!,
-                    opcoes: const ['Alvenaria', 'Madeira', 'Mista'],
-                  ),
-                  CustomDropdown(
-                    label: 'Alternativa de Moradia',
-                    controller: _controllers['alternativaMoradia']!,
-                    opcoes: const [
-                      'Não Possui',
-                      'Possui Outra Casa',
-                      'Casa de Parentes/Amigos',
-                      'Abrigo Temporário',
-                      'Outros'
-                    ],
-                  ),
-                  _campo('observacaoImovel', label: 'Observações'),
-                ],
-              ),
-              AppFormSection(
-                title: 'Pessoas na Residência',
-                children: [
-                  _campo(
-                    'numeroTotalPessoas',
-                    label: 'Número Total de Pessoas',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                  _campo(
-                    'menores0a12',
-                    label: 'Menores 0 a 12',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                  _campo(
-                    'menores13a17',
-                    label: 'Menores 13 a 17',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                  _campo(
-                    'maiores18a59',
-                    label: 'Maiores 18 a 59',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                  _campo(
-                    'idosos60mais',
-                    label: 'Idosos 60+',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                  CustomDropdown(
-                    label: 'Necessidades Especiais',
-                    controller: _controllers['possuiNecessidadesEspeciais']!,
-                    opcoes: const ['Sim', 'Não'],
-                    onChanged: (value) {
-                      final possui = (value ?? '').toLowerCase() == 'sim';
-                      _updatePossui(
-                        'necessidades',
-                        possui,
-                        quantidadeController: _controllers['quantidadeNecessidadesEspeciais'],
-                      );
-                    },
-                  ),
-                  if (_possuiNecessidadesEspeciais)
+        child: AbsorbPointer(
+          absorbing: widget.readOnly,
+          child: Form(
+            key: _formKey,
+            autovalidateMode: AutovalidateMode.onUserInteraction,
+            child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: const EdgeInsets.all(16),
+              children: [
+                AppFormSection(
+                  title: 'Identificação do Atingido',
+                  children: [
+                    _campo('nomeAtingido', label: 'Nome'),
                     _campo(
-                      'quantidadeNecessidadesEspeciais',
-                      label: 'Quantidade',
+                      'cpfAtingido',
+                      label: 'CPF',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly, _cpfFormatter],
+                    ),
+                    _campo('rgAtingido', label: 'RG'),
+                    _campoDataNascimento(),
+                    _campo('enderecoAtingido', label: 'Endereço'),
+                    _campo('bairroAtingido', label: 'Bairro'),
+                    _campo('cidadeAtingido', label: 'Cidade'),
+                    _campo('complementoAtingido', label: 'Complemento'),
+                  ],
+                ),
+                AppFormSection(
+                  title: 'Dados do Imóvel',
+                  children: [
+                    CustomDropdown(
+                      label: 'Localização',
+                      controller: _controllers['localizacao']!,
+                      opcoes: const ['Rural', 'Urbana'],
+                      obrigatorio: true,
+                    ),
+                    CustomDropdown(
+                      label: 'Moradia',
+                      controller: _controllers['moradia']!,
+                      opcoes: const ['Própria', 'Alugada'],
+                      obrigatorio: true,
+                    ),
+                    CustomDropdown(
+                      label: 'Danos na Residência',
+                      controller: _controllers['danoResidencia']!,
+                      opcoes: const ['Danos Parcial', 'Dano Total', 'Sem Dano'],
+                      obrigatorio: true,
+                    ),
+                    _campoMonetario(
+                      'estimativaDanoMoveis',
+                      label: 'Estimativa de Dano em Móveis',
+                    ),
+                    _campoMonetario(
+                      'estimativaDanoEdificacao',
+                      label: 'Estimativa de Dano na Edificação',
+                    ),
+                    CustomDropdown(
+                      label: 'Ocupação',
+                      controller: _controllers['ocupacao']!,
+                      opcoes: const ['Regular', 'Irregular'],
+                    ),
+                    CustomDropdown(
+                      label: 'Tipo de Construção',
+                      controller: _controllers['tipoConstrucao']!,
+                      opcoes: const ['Alvenaria', 'Madeira', 'Mista'],
+                    ),
+                    CustomDropdown(
+                      label: 'Alternativa de Moradia',
+                      controller: _controllers['alternativaMoradia']!,
+                      opcoes: const [
+                        'Não Possui',
+                        'Possui Outra Casa',
+                        'Casa de Parentes/Amigos',
+                        'Abrigo Temporário',
+                        'Outros'
+                      ],
+                    ),
+                    _campo('observacaoImovel', label: 'Observações'),
+                  ],
+                ),
+                AppFormSection(
+                  title: 'Pessoas na Residência',
+                  children: [
+                    _campo(
+                      'numeroTotalPessoas',
+                      label: 'Número Total de Pessoas',
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     ),
-                  _campo('observacaoNecessidades', label: 'Observações'),
-                  CustomDropdown(
-                    label: 'Uso de Medicamento Contínuo',
-                    controller: _controllers['usoMedicamentoContinuo']!,
-                    opcoes: const ['Sim', 'Não'],
-                    obrigatorio: true,
-                  ),
-                  CustomDropdown(
-                    label: 'Possui Desaparecidos?',
-                    controller: _controllers['possuiDesaparecidos']!,
-                    opcoes: const ['Sim', 'Não'],
-                    onChanged: (value) {
-                      final possui = (value ?? '').toLowerCase() == 'sim';
-                      _updatePossui(
-                        'desaparecidos',
-                        possui,
-                        quantidadeController: _controllers['quantidadeDesaparecidos'],
-                      );
-                    },
-                  ),
-                  if (_possuiDesaparecidos)
                     _campo(
-                      'quantidadeDesaparecidos',
-                      label: 'Quantidade Desaparecidos',
+                      'menores0a12',
+                      label: 'Menores 0 a 12',
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     ),
-                  CustomDropdown(
-                    label: 'Possui Feridos?',
-                    controller: _controllers['possuiFeridos']!,
-                    opcoes: const ['Sim', 'Não'],
-                    onChanged: (value) {
-                      final possui = (value ?? '').toLowerCase() == 'sim';
-                      _updatePossui(
-                        'feridos',
-                        possui,
-                        quantidadeController: _controllers['quantidadeFeridos'],
-                      );
-                    },
-                  ),
-                  if (_possuiFeridos)
                     _campo(
-                      'quantidadeFeridos',
-                      label: 'Quantidade Feridos',
+                      'menores13a17',
+                      label: 'Menores 13 a 17',
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     ),
-                  _campo(
-                    'quantidadeObitos',
-                    label: 'Quantidade Óbitos',
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                ],
-              ),
-              AppFormSection(
-                title: 'Assistência Humanitária - Necessidades Imediatas',
-                children: [
-                  CustomItemQuantidade(
-                    label: 'Água Potável 5L',
-                    controllerMarcado: _controllers['qtdAguaPotavel5L']!,
-                    controllerQuantidade: _controllers['qtdAguaPotavel5LQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Colchões Solteiro',
-                    controllerMarcado: _controllers['qtdColchoesSolteiro']!,
-                    controllerQuantidade: _controllers['qtdColchoesSolteiroQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Colchões Casal',
-                    controllerMarcado: _controllers['qtdColchoesCasal']!,
-                    controllerQuantidade: _controllers['qtdColchoesCasalQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Cesta Básica',
-                    controllerMarcado: _controllers['qtdCestasBasicas']!,
-                    controllerQuantidade: _controllers['qtdCestasBasicasQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Kit Higiene Pessoal',
-                    controllerMarcado: _controllers['qtdKitHigienePessoal']!,
-                    controllerQuantidade: _controllers['qtdKitHigienePessoalQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Kit Limpeza',
-                    controllerMarcado: _controllers['qtdKitLimpeza']!,
-                    controllerQuantidade: _controllers['qtdKitLimpezaQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Móveis',
-                    controllerMarcado: _controllers['qtdMoveis']!,
-                    controllerQuantidade: _controllers['qtdMoveisQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Roupas',
-                    controllerMarcado: _controllers['qtdRoupas']!,
-                    controllerQuantidade: _controllers['qtdRoupasQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Telhas 6mm',
-                    controllerMarcado: _controllers['qtdTelhas6mm']!,
-                    controllerQuantidade: _controllers['qtdTelhas6mmQtd']!,
-                  ),
-                  CustomItemQuantidade(
-                    label: 'Telhas 4mm',
-                    controllerMarcado: _controllers['qtdTelhas4mm']!,
-                    controllerQuantidade: _controllers['qtdTelhas4mmQtd']!,
-                  ),
-                  _campo('outrasNecessidades', label: 'Outros Itens'),
-                  _campo('observacaoAssistencia', label: 'Observações'),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Fotos da residência',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  _previewFotoResidencia(),
-                ],
-              ),
-            ],
+                    _campo(
+                      'maiores18a59',
+                      label: 'Maiores 18 a 59',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    ),
+                    _campo(
+                      'idosos60mais',
+                      label: 'Idosos 60+',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    ),
+                    CustomDropdown(
+                      label: 'Necessidades Especiais',
+                      controller: _controllers['possuiNecessidadesEspeciais']!,
+                      opcoes: const ['Sim', 'Não'],
+                      onChanged: (value) {
+                        final possui = (value ?? '').toLowerCase() == 'sim';
+                        _updatePossui(
+                          'necessidades',
+                          possui,
+                          quantidadeController: _controllers['quantidadeNecessidadesEspeciais'],
+                        );
+                      },
+                    ),
+                    if (_possuiNecessidadesEspeciais)
+                      _campo(
+                        'quantidadeNecessidadesEspeciais',
+                        label: 'Quantidade',
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      ),
+                    _campo('observacaoNecessidades', label: 'Observações'),
+                    CustomDropdown(
+                      label: 'Uso de Medicamento Contínuo',
+                      controller: _controllers['usoMedicamentoContinuo']!,
+                      opcoes: const ['Sim', 'Não'],
+                      obrigatorio: true,
+                    ),
+                    CustomDropdown(
+                      label: 'Possui Desaparecidos?',
+                      controller: _controllers['possuiDesaparecidos']!,
+                      opcoes: const ['Sim', 'Não'],
+                      onChanged: (value) {
+                        final possui = (value ?? '').toLowerCase() == 'sim';
+                        _updatePossui(
+                          'desaparecidos',
+                          possui,
+                          quantidadeController: _controllers['quantidadeDesaparecidos'],
+                        );
+                      },
+                    ),
+                    if (_possuiDesaparecidos)
+                      _campo(
+                        'quantidadeDesaparecidos',
+                        label: 'Quantidade Desaparecidos',
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      ),
+                    CustomDropdown(
+                      label: 'Possui Feridos?',
+                      controller: _controllers['possuiFeridos']!,
+                      opcoes: const ['Sim', 'Não'],
+                      onChanged: (value) {
+                        final possui = (value ?? '').toLowerCase() == 'sim';
+                        _updatePossui(
+                          'feridos',
+                          possui,
+                          quantidadeController: _controllers['quantidadeFeridos'],
+                        );
+                      },
+                    ),
+                    if (_possuiFeridos)
+                      _campo(
+                        'quantidadeFeridos',
+                        label: 'Quantidade Feridos',
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      ),
+                    _campo(
+                      'quantidadeObitos',
+                      label: 'Quantidade Óbitos',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    ),
+                  ],
+                ),
+                AppFormSection(
+                  title: 'Assistência Humanitária - Necessidades Imediatas',
+                  children: [
+                    CustomItemQuantidade(
+                      label: 'Água Potável 5L',
+                      controllerMarcado: _controllers['qtdAguaPotavel5L']!,
+                      controllerQuantidade: _controllers['qtdAguaPotavel5LQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Colchões Solteiro',
+                      controllerMarcado: _controllers['qtdColchoesSolteiro']!,
+                      controllerQuantidade: _controllers['qtdColchoesSolteiroQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Colchões Casal',
+                      controllerMarcado: _controllers['qtdColchoesCasal']!,
+                      controllerQuantidade: _controllers['qtdColchoesCasalQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Cesta Básica',
+                      controllerMarcado: _controllers['qtdCestasBasicas']!,
+                      controllerQuantidade: _controllers['qtdCestasBasicasQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Kit Higiene Pessoal',
+                      controllerMarcado: _controllers['qtdKitHigienePessoal']!,
+                      controllerQuantidade: _controllers['qtdKitHigienePessoalQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Kit Limpeza',
+                      controllerMarcado: _controllers['qtdKitLimpeza']!,
+                      controllerQuantidade: _controllers['qtdKitLimpezaQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Móveis',
+                      controllerMarcado: _controllers['qtdMoveis']!,
+                      controllerQuantidade: _controllers['qtdMoveisQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Roupas',
+                      controllerMarcado: _controllers['qtdRoupas']!,
+                      controllerQuantidade: _controllers['qtdRoupasQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Telhas 6mm',
+                      controllerMarcado: _controllers['qtdTelhas6mm']!,
+                      controllerQuantidade: _controllers['qtdTelhas6mmQtd']!,
+                    ),
+                    CustomItemQuantidade(
+                      label: 'Telhas 4mm',
+                      controllerMarcado: _controllers['qtdTelhas4mm']!,
+                      controllerQuantidade: _controllers['qtdTelhas4mmQtd']!,
+                    ),
+                    _campo('outrasNecessidades', label: 'Outros Itens'),
+                    _campo('observacaoAssistencia', label: 'Observações'),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Fotos da residência',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    _previewFotoResidencia(),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
 
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: _isSubmitting ? Colors.grey : Colors.orange.shade700,
-        onPressed: _isSubmitting ? null : _salvarFormulario,
-        icon: _isSubmitting
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : const Icon(Icons.save),
-        label: Text(_isSubmitting ? 'Salvando...' : 'Salvar'),
-      ),
+      floatingActionButton: widget.readOnly 
+          ? null 
+          : FloatingActionButton.extended(
+              backgroundColor: _isSubmitting ? Colors.grey : Colors.orange.shade700,
+              onPressed: _isSubmitting ? null : _salvarFormulario,
+              icon: _isSubmitting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.save),
+              label: Text(_isSubmitting ? 'Salvando...' : 'Salvar'),
+            ),
     );
   }
 
