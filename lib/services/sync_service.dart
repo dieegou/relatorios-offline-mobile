@@ -88,6 +88,53 @@ class SyncService {
         error is http.ClientException;
   }
 
+  String _extrairMensagemErro(http.Response response) {
+    try {
+      final body = jsonDecode(utf8.decode(response.bodyBytes));
+      if (body is Map) {
+        final message = body['message'];
+        if (message is String && message.trim().isNotEmpty) {
+          return message.trim();
+        }
+        final error = body['error'];
+        if (error is String && error.trim().isNotEmpty) {
+          return error.trim();
+        }
+      }
+    } catch (_) {
+    }
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      return 'Sessão expirada ou sem permissão. Faça login novamente.';
+    }
+    return 'Erro no servidor (HTTP ${response.statusCode}).';
+  }
+
+  String _mensagemErroRede(Object e) {
+    if (e is TimeoutException) {
+      return 'O servidor demorou para responder. Será reenviado automaticamente.';
+    }
+    if (e is SocketException) {
+      return 'Sem conexão com o servidor. Será reenviado automaticamente.';
+    }
+    if (e is http.ClientException) {
+      return 'Falha de comunicação com o servidor. Será reenviado automaticamente.';
+    }
+    return 'Erro inesperado ao enviar: $e';
+  }
+
+  Future<void> _registrarErroPendencia(int? localId, String mensagem) async {
+    if (localId == null) return;
+    try {
+      await AppDatabase.instance.salvarErroSincronizacao(localId, mensagem);
+    } catch (e) {
+      await LogService.instance.error(
+        'Falha ao registrar motivo da pendência',
+        tag: 'SyncService',
+        extra: e.toString(),
+      );
+    }
+  }
+
   void _scheduleSyncRetry() {
     final delay = _backoffDelays[_backoffLevel.clamp(0, _backoffDelays.length - 1)];
     if (_backoffLevel < _backoffDelays.length - 1) _backoffLevel++;
@@ -126,6 +173,7 @@ class SyncService {
     required Uri uri,
     required http.MultipartRequest Function() buildRequest,
     required String logTag,
+    int? localId,
   }) async {
     for (int attempt = 0; attempt < _maxRetries; attempt++) {
       if (attempt > 0) {
@@ -149,9 +197,11 @@ class SyncService {
           extra: '$e\n$stack',
         );
         if (!_isNetworkError(e)) {
+          await _registrarErroPendencia(localId, _mensagemErroRede(e));
           return null;
         }
         if (attempt == _maxRetries - 1) {
+          await _registrarErroPendencia(localId, _mensagemErroRede(e));
           _scheduleSyncRetry();
           return null;
         }
@@ -177,6 +227,8 @@ class SyncService {
       final token = auth?['token'] as String?;
       if (token == null || token.isEmpty) {
         await LogService.instance.warning('Tentativa de envio sem token', tag: 'SyncService');
+        await _registrarErroPendencia(
+            localId, 'Sessão expirada. Faça login novamente para enviar.');
         return false;
       }
 
@@ -246,10 +298,11 @@ class SyncService {
         tag: 'SyncService', 
         extra: 'Status: ${response.statusCode}, Body: ${response.body}'
       );
-      print('Erro ao enviar relatório (${response.statusCode}): ${response.body}');
+      await _registrarErroPendencia(localId, _extrairMensagemErro(response));
       return false;
     } catch (e, stack) {
       await LogService.instance.error('Exceção ao enviar relatório', tag: 'SyncService', extra: '$e\n$stack');
+      await _registrarErroPendencia(localId, _mensagemErroRede(e));
       if (_isNetworkError(e)) {
         _scheduleSyncRetry();
       }
@@ -355,6 +408,8 @@ class SyncService {
       final auth = await _getAuth();
       final token = auth?['token'] as String?;
       if (token == null || token.isEmpty) {
+        await _registrarErroPendencia(
+            localId, 'Sessão expirada. Faça login novamente para enviar.');
         return false;
       }
 
@@ -369,6 +424,7 @@ class SyncService {
       final response = await _sendMultipartWithRetry(
         uri: uri,
         logTag: 'Família Atingida',
+        localId: localId,
         buildRequest: () {
           final request = http.MultipartRequest('POST', uri);
           request.headers['Authorization'] = 'Bearer $token';
@@ -405,6 +461,7 @@ class SyncService {
           tag: 'SyncService',
           extra: 'Status: ${response.statusCode}, Body: ${response.body}',
         );
+        await _registrarErroPendencia(localId, _extrairMensagemErro(response));
       }
       return false;
     } finally {
@@ -425,6 +482,8 @@ class SyncService {
       final auth = await _getAuth();
       final token = auth?['token'] as String?;
       if (token == null || token.isEmpty) {
+        await _registrarErroPendencia(
+            localId, 'Sessão expirada. Faça login novamente para enviar.');
         return false;
       }
 
@@ -439,6 +498,7 @@ class SyncService {
       final response = await _sendMultipartWithRetry(
         uri: uri,
         logTag: 'Recibo IAH',
+        localId: localId,
         buildRequest: () => ReciboIahMultipart.buildFromPayload(
           uri: uri,
           token: token,
@@ -465,6 +525,8 @@ class SyncService {
             response.body.contains('recebimento encerrado')) {
           return true;
         }
+
+        await _registrarErroPendencia(localId, _extrairMensagemErro(response));
       }
 
       return false;

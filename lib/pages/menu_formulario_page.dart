@@ -149,7 +149,7 @@ class _MenuFormularioPageState extends State<MenuFormularioPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Relatórios Dinâmicos'),
+        title: const Text('Recibos'),
         backgroundColor: const Color(0xFF3A3F7A),
         foregroundColor: Colors.white,
         actions: [

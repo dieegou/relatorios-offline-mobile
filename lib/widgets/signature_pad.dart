@@ -15,28 +15,9 @@ class SignaturePad extends StatefulWidget {
 }
 
 class _SignaturePadState extends State<SignaturePad> {
-  late List<Offset?> _points;
+  final List<Offset?> _points = [];
   bool _isEmpty = true;
-  static const double canvasWidth = 500;
-  static const double canvasHeight = 350;
-
-  double _getCanvasHeight(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
-    final availableHeight = screenHeight - 150;
-    return availableHeight > canvasHeight ? canvasHeight : availableHeight * 0.7;
-  }
-
-  double _getCanvasWidth(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final maxWidth = screenWidth - 32;
-    return maxWidth > canvasWidth ? canvasWidth : maxWidth;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _points = [];
-  }
+  Size _lastCanvasSize = Size.zero;
 
   void _clearSignature() {
     setState(() {
@@ -60,11 +41,9 @@ class _SignaturePadState extends State<SignaturePad> {
       return;
     }
 
-    final canvasWidth = _getCanvasWidth(context);
-    final canvasHeight = _getCanvasHeight(context);
+    final size = _lastCanvasSize;
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    final size = Size(canvasWidth, canvasHeight);
 
     canvas.drawRect(
       Rect.fromLTWH(0, 0, size.width, size.height),
@@ -73,7 +52,7 @@ class _SignaturePadState extends State<SignaturePad> {
 
     final paint = Paint()
       ..color = Colors.black
-      ..strokeWidth = 2.0
+      ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
@@ -98,81 +77,118 @@ class _SignaturePadState extends State<SignaturePad> {
 
   @override
   Widget build(BuildContext context) {
-    final canvasWidth = _getCanvasWidth(context);
-    final canvasHeight = _getCanvasHeight(context);
-    final canvasSize = Size(canvasWidth, canvasHeight);
-
     return Dialog(
-      insetPadding: const EdgeInsets.all(16),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Desenhe sua assinatura',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-            ),
-            GestureDetector(
-              onPanStart: (details) {
-                if (_isPointInBounds(details.localPosition, canvasSize)) {
-                  _points.add(details.localPosition);
-                }
-              },
-              onPanUpdate: (details) {
-                if (_isPointInBounds(details.localPosition, canvasSize)) {
-                  setState(() {
-                    _points.add(details.localPosition);
-                    _isEmpty = false;
-                  });
-                }
-              },
-              onPanEnd: (details) {
-                _points.add(null);
-              },
-              child: CustomPaint(
-                painter: _SignaturePainter(_points),
-                size: canvasSize,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      insetPadding: const EdgeInsets.all(8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final media = MediaQuery.of(context);
+          final maxWidth = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : media.size.width - 16;
+          final maxHeight = constraints.maxHeight.isFinite
+              ? constraints.maxHeight
+              : media.size.height - 16;
+
+          return SizedBox(
+            width: maxWidth,
+            height: maxHeight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+              child: Column(
                 children: [
-                  ElevatedButton.icon(
-                    onPressed: _clearSignature,
-                    icon: const Icon(Icons.clear),
-                    label: const Text('Limpar'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.orange.shade700,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Desenhe sua assinatura',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
                       ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Fechar',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, canvasConstraints) {
+                        final canvasSize = Size(
+                          canvasConstraints.maxWidth,
+                          canvasConstraints.maxHeight,
+                        );
+                        _lastCanvasSize = canvasSize;
+                        return GestureDetector(
+                          onPanStart: (details) {
+                            if (_isPointInBounds(details.localPosition, canvasSize)) {
+                              _points.add(details.localPosition);
+                            }
+                          },
+                          onPanUpdate: (details) {
+                            if (_isPointInBounds(details.localPosition, canvasSize)) {
+                              setState(() {
+                                _points.add(details.localPosition);
+                                _isEmpty = false;
+                              });
+                            }
+                          },
+                          onPanEnd: (details) {
+                            _points.add(null);
+                          },
+                          child: Container(
+                            width: double.infinity,
+                            height: double.infinity,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade400, width: 1.5),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: CustomPaint(
+                              painter: _SignaturePainter(_points),
+                              size: canvasSize,
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
-                  ElevatedButton.icon(
-                    onPressed: _saveSignature,
-                    icon: const Icon(Icons.check),
-                    label: const Text('Confirmar'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF3A3F7A),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _clearSignature,
+                          icon: const Icon(Icons.clear),
+                          label: const Text('Limpar'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.orange.shade800,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _saveSignature,
+                          icon: const Icon(Icons.check),
+                          label: const Text('Confirmar'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF3A3F7A),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -190,12 +206,13 @@ class _SignaturePainter extends CustomPainter {
       Paint()..color = Colors.white,
     );
 
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
+    final guideY = size.height * 0.72;
+    canvas.drawLine(
+      Offset(size.width * 0.06, guideY),
+      Offset(size.width * 0.94, guideY),
       Paint()
-        ..color = Colors.grey[400]!
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0,
+        ..color = Colors.grey.shade300
+        ..strokeWidth = 1,
     );
 
     final paint = Paint()
@@ -216,4 +233,3 @@ class _SignaturePainter extends CustomPainter {
   @override
   bool shouldRepaint(_SignaturePainter oldDelegate) => true;
 }
-

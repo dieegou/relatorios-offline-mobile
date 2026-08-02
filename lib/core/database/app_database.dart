@@ -22,7 +22,7 @@ class AppDatabase {
 
     final db = await openDatabase(
       path,
-      version: 8,
+      version: 9,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -32,7 +32,6 @@ class AppDatabase {
   }
 
   Future<void> _runMaintenance(Database db) async {
-    // Mantém os dados originais para permitir consulta futura
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -105,6 +104,12 @@ class AppDatabase {
         )
       ''');
     }
+    if (oldVersion < 9) {
+      final formInfo = await db.rawQuery('PRAGMA table_info(formularios)');
+      if (!formInfo.any((c) => c['name'] == 'erro_sincronizacao')) {
+        await db.execute('ALTER TABLE formularios ADD COLUMN erro_sincronizacao TEXT');
+      }
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -150,6 +155,7 @@ class AppDatabase {
         tipo TEXT NOT NULL,
         dados_json TEXT NOT NULL,
         sincronizado INTEGER NOT NULL DEFAULT 0,
+        erro_sincronizacao TEXT,
         data_criacao TEXT NOT NULL,
         FOREIGN KEY (template_id) REFERENCES templates (id)
       )
@@ -302,7 +308,14 @@ class AppDatabase {
     final db = await database;
     final columns = incluirDadosJson
         ? null
-        : <String>['id', 'tipo', 'template_id', 'sincronizado', 'data_criacao'];
+        : <String>[
+            'id',
+            'tipo',
+            'template_id',
+            'sincronizado',
+            'erro_sincronizacao',
+            'data_criacao',
+          ];
 
     if (sincronizado != null) {
       return await db.query(
@@ -326,8 +339,18 @@ class AppDatabase {
       'formularios',
       {
         'sincronizado': 1,
-        // Mantemos o dados_json original para visualização
+        'erro_sincronizacao': null,
       },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> salvarErroSincronizacao(int id, String? erro) async {
+    final db = await database;
+    await db.update(
+      'formularios',
+      {'erro_sincronizacao': erro},
       where: 'id = ?',
       whereArgs: [id],
     );

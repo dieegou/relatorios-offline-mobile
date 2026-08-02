@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
 import 'package:relatoriooffline/core/models/entrega_iah_model.dart';
+import 'package:relatoriooffline/services/location_service.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 import 'package:relatoriooffline/widgets/app_form_widgets.dart';
 import 'package:relatoriooffline/widgets/signature_pad.dart';
@@ -27,9 +28,8 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
   double? _precisaoGps;
   bool _capturandoGps = false;
 
-  static const Duration _gpsTimeout = Duration(seconds: 12);
-
   final List<Uint8List> _fotosEntrega = [];
+  int _fotosProcessando = 0;
   Uint8List? _assinaturaResponsavelBytes;
   Uint8List? _assinaturaAgenteBytes;
 
@@ -47,14 +47,30 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
     }
   }
 
+  StreamSubscription<Position>? _gpsSubscription;
+
   @override
   void initState() {
     super.initState();
     _capturarLocalizacao();
+    _gpsSubscription = LocationService.instance.updates.listen((position) {
+      if (!mounted) return;
+      if (_precisaoGps != null &&
+          position.accuracy > 0 &&
+          position.accuracy >= _precisaoGps!) {
+        return;
+      }
+      setState(() {
+        _latitude = position.latitude;
+        _longitude = position.longitude;
+        _precisaoGps = position.accuracy;
+      });
+    });
   }
 
   @override
   void dispose() {
+    _gpsSubscription?.cancel();
     _obsController.dispose();
     super.dispose();
   }
@@ -64,55 +80,11 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
     if (mounted) setState(() => _capturandoGps = true);
 
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (mounted && showFeedback) {
-          _mostrarSnack(
-            'Ative o serviço de localização para capturar a posição.',
-            sucesso: false,
-          );
-        }
-        return false;
-      }
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (mounted && showFeedback) {
-            _mostrarSnack('Permissão de localização negada.', sucesso: false);
-          }
-          return false;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        if (mounted && showFeedback) {
-          _mostrarSnack(
-            'Permissão de localização permanentemente negada. Configure nas definições.',
-            sucesso: false,
-          );
-        }
-        return false;
-      }
-
-      Position? posicao;
-      try {
-        posicao = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.medium,
-            timeLimit: _gpsTimeout,
-          ),
-        ).timeout(_gpsTimeout);
-      } catch (_) {
-        posicao = await Geolocator.getLastKnownPosition()
-            .timeout(const Duration(seconds: 5), onTimeout: () => null);
-      }
-
+      final posicao = await LocationService.instance.getPosition();
       if (posicao == null) {
         if (mounted && showFeedback) {
           _mostrarSnack(
-            'Não foi possível obter a localização (tempo esgotado). '
+            'Não foi possível obter a localização. '
             'Verifique o GPS e tente novamente em local aberto.',
             sucesso: false,
           );
@@ -122,7 +94,7 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
 
       if (!mounted) return false;
       setState(() {
-        _latitude = posicao!.latitude;
+        _latitude = posicao.latitude;
         _longitude = posicao.longitude;
         _precisaoGps = posicao.accuracy;
       });
@@ -133,15 +105,45 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
   }
 
   Future<void> _selecionarFotoEntrega(ImageSource source) async {
+    final endereco = _familia.enderecoResponsavel;
     if (source == ImageSource.camera) {
-      final bytes = await ImageHelper.pickAndCompress(ImageSource.camera);
-      if (bytes != null) {
-        setState(() => _fotosEntrega.add(bytes));
+      try {
+        final bytes = await ImageHelper.pickAndCompress(
+          ImageSource.camera,
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          precisaoGps: _precisaoGps,
+          onProcessingStarted: () {
+            if (mounted) setState(() => _fotosProcessando = 1);
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _fotosProcessando = 0;
+          if (bytes != null) _fotosEntrega.add(bytes);
+        });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     } else {
-      final novasFotos = await ImageHelper.pickMultiAndCompress();
-      if (novasFotos.isNotEmpty) {
-        setState(() => _fotosEntrega.addAll(novasFotos));
+      try {
+        final novasFotos = await ImageHelper.pickMultiAndCompress(
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          precisaoGps: _precisaoGps,
+          onProcessingStarted: (count) {
+            if (mounted) setState(() => _fotosProcessando = count);
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _fotosProcessando = 0;
+          if (novasFotos.isNotEmpty) _fotosEntrega.addAll(novasFotos);
+        });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     }
   }
@@ -504,19 +506,23 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
   }
 
   Widget _buildPhotosSection() {
+    final totalVisivel = _fotosEntrega.length + _fotosProcessando;
     return AppFormSection(
       title: 'Fotos da Entrega',
       children: [
         AppImagePickerButtons(
           label: 'Adicionar Foto',
           obrigatorio: true,
+          enabled: _fotosProcessando == 0,
           onCamera: () => _selecionarFotoEntrega(ImageSource.camera),
           onGallery: () => _selecionarFotoEntrega(ImageSource.gallery),
         ),
-        if (_fotosEntrega.isNotEmpty) ...[
+        if (totalVisivel > 0) ...[
           const SizedBox(height: 16),
           Text(
-            '${_fotosEntrega.length} imagem(ns) selecionada(s)',
+            _fotosProcessando > 0
+                ? 'Processando foto…'
+                : '${_fotosEntrega.length} imagem(ns) selecionada(s)',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 8),
@@ -524,9 +530,12 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
             height: 120,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: _fotosEntrega.length,
+              itemCount: totalVisivel,
               separatorBuilder: (_, __) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
+                if (index >= _fotosEntrega.length) {
+                  return const AppPhotoProcessingTile(width: 120, height: 120);
+                }
                 return Stack(
                   children: [
                     GestureDetector(
@@ -561,11 +570,12 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
               },
             ),
           ),
-          TextButton.icon(
-            onPressed: () => setState(_fotosEntrega.clear),
-            icon: const Icon(Icons.delete_outline, color: Colors.red),
-            label: const Text('Remover todas', style: TextStyle(color: Colors.red)),
-          ),
+          if (_fotosEntrega.isNotEmpty && _fotosProcessando == 0)
+            TextButton.icon(
+              onPressed: () => setState(_fotosEntrega.clear),
+              icon: const Icon(Icons.delete_outline, color: Colors.red),
+              label: const Text('Remover todas', style: TextStyle(color: Colors.red)),
+            ),
         ],
       ],
     );
@@ -577,13 +587,15 @@ class _ReciboIahFormPageState extends State<ReciboIahFormPage> {
       children: [
         if (bytes != null)
           Container(
-            height: 100,
+            height: 90,
             width: double.infinity,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
+              color: Colors.white,
               border: Border.all(color: Colors.grey.shade300),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Image.memory(bytes),
+            child: Image.memory(bytes, fit: BoxFit.contain),
           )
         else
           const Text('Assinatura pendente', style: TextStyle(color: Colors.red, fontSize: 12)),

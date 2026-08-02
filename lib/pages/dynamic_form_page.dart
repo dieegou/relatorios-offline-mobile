@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/services/location_service.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 import 'package:relatoriooffline/widgets/signature_pad.dart';
 
@@ -32,6 +32,7 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
   final _formKey = GlobalKey<FormState>();
   final Map<String, dynamic> _values = {};
   final Map<String, TextEditingController> _controllers = {};
+  final Map<String, int> _fotosProcessando = {};
   bool _isSaving = false;
 
   @override
@@ -80,59 +81,23 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
   Future<void> _capturarLocalizacao(String chave) async {
     if (widget.readOnly) return;
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('O serviço de localização está desativado.')),
-          );
-        }
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Permissão de localização negada.')),
-            );
-          }
-          return;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Permissão de localização negada permanentemente.')),
-          );
-        }
-        return;
-      }
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Buscando localização...'), duration: Duration(seconds: 2)),
+          const SnackBar(
+            content: Text('Buscando localização...'),
+            duration: Duration(seconds: 2),
+          ),
         );
       }
 
-      Position? position;
-      try {
-        position = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            timeLimit: Duration(seconds: 30),
-          ),
-        );
-      } catch (e) {
-        position = await Geolocator.getLastKnownPosition();
-        if (position == null) rethrow;
+      final position = await LocationService.instance.getPosition();
+      if (position == null) {
+        throw 'Não foi possível obter a localização. Verifique o GPS.';
       }
 
       setState(() {
-        _controllers[chave]!.text = "${position?.latitude},${position?.longitude}";
+        _controllers[chave]!.text =
+            '${position.latitude},${position.longitude}';
       });
     } catch (e) {
       if (mounted) {
@@ -159,21 +124,61 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
     }
   }
 
+  String? _enderecoDoFormulario() {
+    final campos = widget.template['campos'] as List<dynamic>;
+    for (final campo in campos) {
+      final chave = (campo['chave'] ?? '').toString();
+      final rotulo = (campo['rotulo'] ?? '').toString();
+      final tipo = (campo['tipo'] ?? '').toString();
+      if (tipo != 'TEXTO') continue;
+      final haystack = '$chave $rotulo'.toLowerCase();
+      if (haystack.contains('endereco') || haystack.contains('endereço')) {
+        final texto = _controllers[chave]?.text.trim() ?? '';
+        if (texto.isNotEmpty) return texto;
+      }
+    }
+    return null;
+  }
+
   Future<void> _selecionarImagem(String chave, {required bool daCamera}) async {
     if (widget.readOnly) return;
+    final endereco = _enderecoDoFormulario();
     if (daCamera) {
-      final bytes = await ImageHelper.pickAndCompress(ImageSource.camera);
-      if (bytes != null) {
+      try {
+        final bytes = await ImageHelper.pickAndCompress(
+          ImageSource.camera,
+          endereco: endereco,
+          onProcessingStarted: () {
+            if (mounted) setState(() => _fotosProcessando[chave] = 1);
+          },
+        );
+        if (!mounted) return;
         setState(() {
-          (_values[chave] as List<Uint8List>).add(bytes);
+          _fotosProcessando[chave] = 0;
+          if (bytes != null) {
+            (_values[chave] as List<Uint8List>).add(bytes);
+          }
         });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando[chave] = 0);
       }
     } else {
-      final novasImagens = await ImageHelper.pickMultiAndCompress();
-      if (novasImagens.isNotEmpty) {
+      try {
+        final novasImagens = await ImageHelper.pickMultiAndCompress(
+          endereco: endereco,
+          onProcessingStarted: (count) {
+            if (mounted) setState(() => _fotosProcessando[chave] = count);
+          },
+        );
+        if (!mounted) return;
         setState(() {
-          (_values[chave] as List<Uint8List>).addAll(novasImagens);
+          _fotosProcessando[chave] = 0;
+          if (novasImagens.isNotEmpty) {
+            (_values[chave] as List<Uint8List>).addAll(novasImagens);
+          }
         });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando[chave] = 0);
       }
     }
   }
@@ -538,6 +543,7 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
 
       case 'IMAGEM':
         final fotos = _values[chave] as List<Uint8List>;
+        final processando = _fotosProcessando[chave] ?? 0;
         return Padding(
           padding: const EdgeInsets.only(bottom: 18),
           child: Column(
@@ -546,42 +552,61 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
               AppImagePickerButtons(
                 label: label,
                 obrigatorio: obrigatorio,
+                enabled: processando == 0,
                 onCamera: () => _selecionarImagem(chave, daCamera: true),
                 onGallery: () => _selecionarImagem(chave, daCamera: false),
               ),
-              if (fotos.isNotEmpty) ...[
+              if (fotos.isNotEmpty || processando > 0) ...[
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: fotos
-                      .asMap()
-                      .entries
-                      .map((entry) => Stack(
+                  children: [
+                    ...fotos.asMap().entries.map(
+                          (entry) => Stack(
                             children: [
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
-                                child: Image.memory(entry.value, width: 80, height: 80, fit: BoxFit.cover),
+                                child: Image.memory(
+                                  entry.value,
+                                  width: 80,
+                                  height: 80,
+                                  fit: BoxFit.cover,
+                                ),
                               ),
                               Positioned(
                                 right: 0,
                                 top: 0,
-                                child: widget.readOnly 
+                                child: widget.readOnly
                                     ? const SizedBox.shrink()
                                     : GestureDetector(
-                                        onTap: () => setState(() => fotos.removeAt(entry.key)),
+                                        onTap: () => setState(
+                                          () => fotos.removeAt(entry.key),
+                                        ),
                                         child: Container(
-                                          decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                                          child: const Icon(Icons.close, color: Colors.white, size: 20),
+                                          decoration: const BoxDecoration(
+                                            color: Colors.red,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.close,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
                                         ),
                                       ),
                               ),
                             ],
-                          ))
-                      .toList(),
+                          ),
+                        ),
+                    ...List.generate(
+                      processando,
+                      (_) => const AppPhotoProcessingTile(width: 80, height: 80),
+                    ),
+                  ],
                 ),
               ],
-              if (obrigatorio && fotos.isEmpty)
+              if (obrigatorio && fotos.isEmpty && processando == 0)
                 const Padding(
                   padding: EdgeInsets.only(top: 8, left: 4),
                   child: Text('Adicione pelo menos uma foto', style: TextStyle(color: Colors.red, fontSize: 12)),
@@ -606,7 +631,12 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
                         children: [
                           ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.memory(entry.value, width: 120, height: 80, fit: BoxFit.cover),
+                            child: Image.memory(
+                              entry.value,
+                              width: 200,
+                              height: 64,
+                              fit: BoxFit.contain,
+                            ),
                           ),
                           Positioned(
                             right: 0,
@@ -627,19 +657,19 @@ class _DynamicFormPageState extends State<DynamicFormPage> {
                     GestureDetector(
                       onTap: () => _abrirSignaturePad(chave),
                       child: Container(
-                        width: 120,
-                        height: 80,
+                        width: 200,
+                        height: 64,
                         decoration: BoxDecoration(
                           color: Colors.grey[50],
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.grey.shade300),
                         ),
-                        child: Column(
+                        child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.edit, size: 28, color: Colors.grey.shade600),
-                            const SizedBox(height: 4),
-                            Text('Assinar', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                            Icon(Icons.edit, size: 22, color: Colors.grey.shade600),
+                            const SizedBox(width: 8),
+                            Text('Assinar', style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
                           ],
                         ),
                       ),

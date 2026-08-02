@@ -26,7 +26,7 @@ class _EnviadosPageState extends State<EnviadosPage> {
 
     final formularios = await AppDatabase.instance.obterFormularios(
       sincronizado: true,
-      incluirDadosJson: true,
+      incluirDadosJson: false,
     );
 
     if (mounted) {
@@ -38,9 +38,13 @@ class _EnviadosPageState extends State<EnviadosPage> {
   }
 
   Future<void> _abrirFormulario(Map<String, dynamic> form) async {
+    final id = form['id'] as int;
     final tipo = form['tipo'] as String;
-    final dadosJson = form['dados_json'] as String;
     final templateId = form['template_id'] as int?;
+
+    final formCompleto = await AppDatabase.instance.obterFormularioPorId(id);
+    if (formCompleto == null) return;
+    final dadosJson = formCompleto['dados_json'] as String;
 
     // Se o dados_json for apenas o placeholder antigo, não conseguimos mostrar os dados.
     if (dadosJson == '{"sincronizado":true}') {

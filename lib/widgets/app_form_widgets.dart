@@ -1,8 +1,7 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:relatoriooffline/services/photo_stamp_service.dart';
 
 class AppFormSection extends StatelessWidget {
   const AppFormSection({
@@ -149,10 +148,11 @@ class AppTextFormField extends StatelessWidget {
 }
 
 class AppImagePickerButtons extends StatelessWidget {
-  final VoidCallback onCamera;
-  final VoidCallback onGallery;
+  final VoidCallback? onCamera;
+  final VoidCallback? onGallery;
   final String label;
   final bool obrigatorio;
+  final bool enabled;
 
   const AppImagePickerButtons({
     super.key,
@@ -160,6 +160,7 @@ class AppImagePickerButtons extends StatelessWidget {
     required this.onGallery,
     this.label = "Adicionar Foto",
     this.obrigatorio = false,
+    this.enabled = true,
   });
 
   @override
@@ -173,7 +174,7 @@ class AppImagePickerButtons extends StatelessWidget {
           children: [
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: onCamera,
+                onPressed: enabled ? onCamera : null,
                 icon: const Icon(Icons.camera_alt),
                 label: const Text("Câmera"),
                 style: ElevatedButton.styleFrom(
@@ -188,7 +189,7 @@ class AppImagePickerButtons extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: onGallery,
+                onPressed: enabled ? onGallery : null,
                 icon: const Icon(Icons.photo_library),
                 label: const Text("Galeria"),
                 style: ElevatedButton.styleFrom(
@@ -207,12 +208,63 @@ class AppImagePickerButtons extends StatelessWidget {
   }
 }
 
+class AppPhotoProcessingTile extends StatelessWidget {
+  const AppPhotoProcessingTile({
+    super.key,
+    this.width = 100,
+    this.height = 100,
+  });
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: width,
+        height: height,
+        color: const Color(0xFF3A3F7A).withValues(alpha: 0.08),
+        alignment: Alignment.center,
+        child: const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Processando…',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF3A3F7A),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ImageHelper {
   static const int maxSizeBytes = 5 * 1024 * 1024; // 5MB
 
-  static Future<Uint8List?> pickAndCompress(ImageSource source) async {
+  static Future<Uint8List?> pickAndCompress(
+    ImageSource source, {
+    String? endereco,
+    double? latitude,
+    double? longitude,
+    double? precisaoGps,
+    VoidCallback? onProcessingStarted,
+  }) async {
     final ImagePicker picker = ImagePicker();
-    
+
     final XFile? file = await picker.pickImage(
       source: source,
       maxWidth: 1280,
@@ -223,15 +275,34 @@ class ImageHelper {
     if (file == null) return null;
 
     final bytes = await file.readAsBytes();
-    
+
     if (bytes.lengthInBytes > maxSizeBytes) {
-      return null; 
+      return null;
     }
 
-    return bytes;
+    onProcessingStarted?.call();
+
+    final stamped = await PhotoStampService.instance.stamp(
+      bytes,
+      enderecoFormulario: endereco,
+      latitude: latitude,
+      longitude: longitude,
+      precisaoGps: precisaoGps,
+    );
+    if (stamped.lengthInBytes > maxSizeBytes) {
+      return bytes;
+    }
+    return stamped;
   }
 
-  static Future<List<Uint8List>> pickMultiAndCompress({int limit = 6}) async {
+  static Future<List<Uint8List>> pickMultiAndCompress({
+    int limit = 6,
+    String? endereco,
+    double? latitude,
+    double? longitude,
+    double? precisaoGps,
+    void Function(int count)? onProcessingStarted,
+  }) async {
     final ImagePicker picker = ImagePicker();
     final List<XFile> files = await picker.pickMultiImage(
       maxWidth: 1280,
@@ -239,14 +310,32 @@ class ImageHelper {
       imageQuality: 75,
     );
 
-    List<Uint8List> result = [];
+    final List<Uint8List> result = [];
     for (var file in files.take(limit)) {
       final bytes = await file.readAsBytes();
       if (bytes.lengthInBytes <= maxSizeBytes) {
         result.add(bytes);
       }
     }
-    return result;
+
+    if (result.isEmpty) return result;
+
+    onProcessingStarted?.call(result.length);
+
+    final stamped = await PhotoStampService.instance.stampAll(
+      result,
+      enderecoFormulario: endereco,
+      latitude: latitude,
+      longitude: longitude,
+      precisaoGps: precisaoGps,
+    );
+    final out = <Uint8List>[];
+    for (var i = 0; i < stamped.length; i++) {
+      out.add(
+        stamped[i].lengthInBytes > maxSizeBytes ? result[i] : stamped[i],
+      );
+    }
+    return out;
   }
 }
 

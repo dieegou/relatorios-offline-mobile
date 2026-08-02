@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/services/location_service.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 import 'package:relatoriooffline/widgets/app_form_widgets.dart';
 
@@ -62,6 +64,8 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
   double? _precisaoGps;
   bool _moradiaAlternativa = false;
   final List<Uint8List> _fotosResidencia = [];
+  int _fotosProcessando = 0;
+  StreamSubscription<Position>? _gpsSubscription;
 
   @override
   void initState() {
@@ -70,11 +74,29 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
       _loadInitialData();
     } else {
       _capturarLocalizacao();
+      _ouvirRefinamentosGps();
     }
+  }
+
+  void _ouvirRefinamentosGps() {
+    _gpsSubscription = LocationService.instance.updates.listen((position) {
+      if (!mounted) return;
+      if (_precisaoGps != null &&
+          position.accuracy > 0 &&
+          position.accuracy >= _precisaoGps!) {
+        return;
+      }
+      setState(() {
+        _latitude = position.latitude;
+        _longitude = position.longitude;
+        _precisaoGps = position.accuracy;
+      });
+    });
   }
 
   @override
   void dispose() {
+    _gpsSubscription?.cancel();
     for (var node in _focusNodes.values) {
       node.dispose();
     }
@@ -121,22 +143,10 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
   Future<void> _capturarLocalizacao() async {
     setState(() => _isLoading = true);
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        throw 'Serviço de localização desativado';
+      final position = await LocationService.instance.getPosition();
+      if (position == null) {
+        throw 'Não foi possível obter a localização. Verifique o GPS.';
       }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          throw 'Permissão de localização negada';
-        }
-      }
-
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-      );
       setState(() {
         _latitude = position.latitude;
         _longitude = position.longitude;
@@ -168,24 +178,48 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
       return;
     }
 
+    final endereco = _controllers['enderecoResponsavel']?.text;
     if (source == ImageSource.gallery) {
-      setState(() => _isLoading = true);
       try {
-        final novasFotos = await ImageHelper.pickMultiAndCompress(limit: limiteRestante);
-        if (novasFotos.isNotEmpty) {
-          setState(() {
+        final novasFotos = await ImageHelper.pickMultiAndCompress(
+          limit: limiteRestante,
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          precisaoGps: _precisaoGps,
+          onProcessingStarted: (count) {
+            if (mounted) setState(() => _fotosProcessando = count);
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _fotosProcessando = 0;
+          if (novasFotos.isNotEmpty) {
             _fotosResidencia.addAll(novasFotos);
-          });
-        }
-      } finally {
-        setState(() => _isLoading = false);
+          }
+        });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     } else {
-      final foto = await ImageHelper.pickAndCompress(source);
-      if (foto != null) {
+      try {
+        final foto = await ImageHelper.pickAndCompress(
+          source,
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          precisaoGps: _precisaoGps,
+          onProcessingStarted: () {
+            if (mounted) setState(() => _fotosProcessando = 1);
+          },
+        );
+        if (!mounted) return;
         setState(() {
-          _fotosResidencia.add(foto);
+          _fotosProcessando = 0;
+          if (foto != null) _fotosResidencia.add(foto);
         });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     }
   }
@@ -221,7 +255,6 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
         'fotosResidencia': _fotosResidencia.map((e) => base64Encode(e)).toList(),
       };
 
-      // Adicionar quantidades apenas se preenchidas
       _controllers.forEach((key, controller) {
         if (key.startsWith('quantidade')) {
           final value = int.tryParse(controller.text);
@@ -245,7 +278,6 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
         );
       }
 
-      // Tenta sincronizar imediatamente
       final sucesso = await SyncService.instance.trySendFamiliaAtingida(payload, localId: id);
 
       if (sucesso) {
@@ -438,7 +470,9 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
                       children: [
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed: () => _selecionarFoto(ImageSource.camera),
+                            onPressed: _fotosProcessando > 0
+                                ? null
+                                : () => _selecionarFoto(ImageSource.camera),
                             icon: const Icon(Icons.camera_alt),
                             label: const Text('Câmera'),
                           ),
@@ -446,7 +480,9 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed: () => _selecionarFoto(ImageSource.gallery),
+                            onPressed: _fotosProcessando > 0
+                                ? null
+                                : () => _selecionarFoto(ImageSource.gallery),
                             icon: const Icon(Icons.photo_library),
                             label: const Text('Galeria'),
                           ),
@@ -458,27 +494,33 @@ class _CadastroFamiliaPageState extends State<CadastroFamiliaPage> {
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: _fotosResidencia.asMap().entries.map((entry) {
-                      return Stack(
-                        children: [
-                          Image.memory(entry.value,
-                              width: 100, height: 100, fit: BoxFit.cover),
-                          if (!widget.readOnly)
-                            Positioned(
-                              right: 0,
-                              child: IconButton(
-                                icon: const Icon(Icons.remove_circle,
-                                    color: Colors.red),
-                                onPressed: () {
-                                  setState(() {
-                                    _fotosResidencia.removeAt(entry.key);
-                                  });
-                                },
+                    children: [
+                      ..._fotosResidencia.asMap().entries.map((entry) {
+                        return Stack(
+                          children: [
+                            Image.memory(entry.value,
+                                width: 100, height: 100, fit: BoxFit.cover),
+                            if (!widget.readOnly)
+                              Positioned(
+                                right: 0,
+                                child: IconButton(
+                                  icon: const Icon(Icons.remove_circle,
+                                      color: Colors.red),
+                                  onPressed: () {
+                                    setState(() {
+                                      _fotosResidencia.removeAt(entry.key);
+                                    });
+                                  },
+                                ),
                               ),
-                            ),
-                        ],
-                      );
-                    }).toList(),
+                          ],
+                        );
+                      }),
+                      ...List.generate(
+                        _fotosProcessando,
+                        (_) => const AppPhotoProcessingTile(),
+                      ),
+                    ],
                   ),
                 ],
               ),

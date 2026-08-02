@@ -32,7 +32,7 @@ class _PendentesPageState extends State<PendentesPage> {
 
     final formularios = await AppDatabase.instance.obterFormularios(
       sincronizado: false,
-      incluirDadosJson: true,
+      incluirDadosJson: false,
     );
 
     if (mounted) {
@@ -46,8 +46,11 @@ class _PendentesPageState extends State<PendentesPage> {
   Future<void> _abrirFormulario(Map<String, dynamic> form) async {
     final tipo = form['tipo'] as String;
     final idLocal = form['id'] as int;
-    final dadosJson = form['dados_json'] as String;
     final templateId = form['template_id'] as int?;
+
+    final formCompleto = await AppDatabase.instance.obterFormularioPorId(idLocal);
+    if (formCompleto == null) return;
+    final dadosJson = formCompleto['dados_json'] as String;
 
     final initialData = jsonDecode(dadosJson) as Map<String, dynamic>;
 
@@ -169,6 +172,8 @@ class _PendentesPageState extends State<PendentesPage> {
                       final form = _formularios[index];
                       final id = form['id'] as int;
                       final tipo = form['tipo'] as String;
+                      final erroSincronizacao =
+                          form['erro_sincronizacao'] as String?;
                       final dataCriacao = DateTime.parse(
                         form['data_criacao'] as String,
                       );
@@ -183,7 +188,7 @@ class _PendentesPageState extends State<PendentesPage> {
                         direction: DismissDirection.endToStart,
                         confirmDismiss: (direction) async {
                           await _deletarFormulario(id);
-                          return false; // Sempre retorna false porque o _deletarFormulario já atualiza a lista
+                          return false;
                         },
                         background: Container(
                           margin: const EdgeInsets.only(bottom: 12),
@@ -264,6 +269,45 @@ class _PendentesPageState extends State<PendentesPage> {
                                     ],
                                   ),
                                 ),
+                                if (erroSincronizacao != null &&
+                                    erroSincronizacao.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.shade50,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.red.shade200,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Icon(
+                                          Icons.error_outline,
+                                          size: 16,
+                                          color: Colors.red.shade700,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            'Motivo: $erroSincronizacao',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.red.shade700,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),

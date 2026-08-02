@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -9,6 +10,7 @@ import 'package:relatoriooffline/widgets/app_form_widgets.dart';
 import 'package:relatoriooffline/widgets/custom_dropdown.dart';
 import 'package:relatoriooffline/widgets/custon_item_quantidade.dart';
 import 'package:relatoriooffline/core/database/app_database.dart';
+import 'package:relatoriooffline/services/location_service.dart';
 import 'package:relatoriooffline/services/sync_service.dart';
 
 class FamiliaFormPage extends StatefulWidget {
@@ -98,6 +100,7 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
   double? _latitude;
   double? _longitude;
   final List<Uint8List> _fotosResidencia = <Uint8List>[];
+  int _fotosProcessando = 0;
   bool _possuiNecessidadesEspeciais = false;
   bool _possuiDesaparecidos = false;
   bool _possuiFeridos = false;
@@ -119,6 +122,8 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
     'usoMedicamentoContinuo',
   };
 
+  StreamSubscription<Position>? _gpsSubscription;
+
   @override
   void initState() {
     super.initState();
@@ -129,6 +134,16 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
       _preencherCampos(widget.initialData!);
     } else {
       _capturarLocalizacao();
+      _gpsSubscription = LocationService.instance.updates.listen((position) {
+        if (!mounted) return;
+        setState(() {
+          _latitude = position.latitude;
+          _longitude = position.longitude;
+          if (_controllers.containsKey('localizacao')) {
+            _controllers['localizacao']!.text = "$_latitude,$_longitude";
+          }
+        });
+      });
     }
   }
 
@@ -523,15 +538,43 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
   }
 
   Future<void> _selecionarFotoResidencia(ImageSource source) async {
+    final endereco = _controllers['enderecoAtingido']?.text;
     if (source == ImageSource.camera) {
-      final bytes = await ImageHelper.pickAndCompress(ImageSource.camera);
-      if (bytes != null) {
-        setState(() => _fotosResidencia.add(bytes));
+      try {
+        final bytes = await ImageHelper.pickAndCompress(
+          ImageSource.camera,
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          onProcessingStarted: () {
+            if (mounted) setState(() => _fotosProcessando = 1);
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _fotosProcessando = 0;
+          if (bytes != null) _fotosResidencia.add(bytes);
+        });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     } else {
-      final novasFotos = await ImageHelper.pickMultiAndCompress();
-      if (novasFotos.isNotEmpty) {
-        setState(() => _fotosResidencia.addAll(novasFotos));
+      try {
+        final novasFotos = await ImageHelper.pickMultiAndCompress(
+          endereco: endereco,
+          latitude: _latitude,
+          longitude: _longitude,
+          onProcessingStarted: (count) {
+            if (mounted) setState(() => _fotosProcessando = count);
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _fotosProcessando = 0;
+          if (novasFotos.isNotEmpty) _fotosResidencia.addAll(novasFotos);
+        });
+      } catch (_) {
+        if (mounted) setState(() => _fotosProcessando = 0);
       }
     }
   }
@@ -570,17 +613,21 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
   }
 
   Widget _previewFotoResidencia() {
+    final totalVisivel = _fotosResidencia.length + _fotosProcessando;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         AppImagePickerButtons(
+          enabled: _fotosProcessando == 0,
           onCamera: () => _selecionarFotoResidencia(ImageSource.camera),
           onGallery: () => _selecionarFotoResidencia(ImageSource.gallery),
         ),
-        if (_fotosResidencia.isNotEmpty) ...[
+        if (totalVisivel > 0) ...[
           const SizedBox(height: 16),
           Text(
-            '${_fotosResidencia.length} imagem(ns) selecionada(s)',
+            _fotosProcessando > 0
+                ? 'Processando foto…'
+                : '${_fotosResidencia.length} imagem(ns) selecionada(s)',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 8),
@@ -588,9 +635,12 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
             height: 120,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: _fotosResidencia.length,
+              itemCount: totalVisivel,
               separatorBuilder: (_, __) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
+                if (index >= _fotosResidencia.length) {
+                  return const AppPhotoProcessingTile(width: 120, height: 120);
+                }
                 return Stack(
                   children: [
                     GestureDetector(
@@ -625,60 +675,30 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
               },
             ),
           ),
-          TextButton.icon(
-            onPressed: () => setState(_fotosResidencia.clear),
-            icon: const Icon(Icons.delete_outline, color: Colors.red),
-            label: const Text('Remover todas', style: TextStyle(color: Colors.red)),
-          ),
+          if (_fotosResidencia.isNotEmpty && _fotosProcessando == 0)
+            TextButton.icon(
+              onPressed: () => setState(_fotosResidencia.clear),
+              icon: const Icon(Icons.delete_outline, color: Colors.red),
+              label: const Text('Remover todas', style: TextStyle(color: Colors.red)),
+            ),
         ],
       ],
     );
   }
 
   Future<bool> _capturarLocalizacao({bool showFeedback = true}) async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
+    final posicao = await LocationService.instance.getPosition();
+    if (posicao == null) {
       if (mounted && showFeedback) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ative o serviço de localização para capturar latitude/longitude.')),
+          const SnackBar(
+            content: Text(
+              'Não foi possível obter a localização. Verifique o GPS e a permissão.',
+            ),
+          ),
         );
       }
       return false;
-    }
-
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        if (mounted && showFeedback) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Permissão de localização negada.')),
-          );
-        }
-        return false;
-      }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      if (mounted && showFeedback) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Permissão de localização permanentemente negada. Configure nas definições.')),
-        );
-      }
-      return false;
-    }
-
-    Position? posicao;
-    try {
-      posicao = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-          timeLimit: Duration(seconds: 30),
-        ),
-      );
-    } catch (e) {
-      posicao = await Geolocator.getLastKnownPosition();
-      if (posicao == null) return false;
     }
 
     _latitude = posicao.latitude;
@@ -1040,6 +1060,7 @@ class _FamiliaFormPageState extends State<FamiliaFormPage> {
 
   @override
   void dispose() {
+    _gpsSubscription?.cancel();
     for (var controller in _controllers.values) {
       controller.dispose();
     }
