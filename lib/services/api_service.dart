@@ -7,9 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:relatoriooffline/services/log_service.dart';
 
 class ApiService {
-  //static const String _baseUrl = 'https://relatorios.defesacivil.sc.gov.br/api';
+  static const String _baseUrl = 'https://relatorios.defesacivil.sc.gov.br/api';
   //static const String _baseUrl = 'http://10.112.2.151/api';
-  static const String _baseUrl = 'http://192.168.1.116:8084/api';
+  //static const String _baseUrl = 'http://192.168.1.116:8084/api';
   //static const String _baseUrl = 'http://10.80.110.243:8084/api';
   static String customBaseUrl = '';
   static bool allowSelfSignedCert = !kReleaseMode;

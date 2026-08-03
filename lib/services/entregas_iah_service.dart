@@ -39,7 +39,11 @@ class EntregasIahService {
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         await AppDatabase.instance.salvarEntregasIah(data);
-        return data.map((json) => EntregaIah.fromJson(json)).toList();
+        final merged = await AppDatabase.instance.obterEntregasIah();
+        return merged
+            .map((row) => EntregaIah.fromJson(
+                jsonDecode(row['dados_json'] as String) as Map<String, dynamic>))
+            .toList();
       }
       
       await LogService.instance.warning(
